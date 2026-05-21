@@ -1,0 +1,7 @@
+#!/bin/sh  
+
+echo "I: create dlcv user"
+adduser --gecos dlcv --disabled-password dlcv
+
+echo "I: set dlcv user password"
+echo "dlcv:dlcvai" | chpasswd

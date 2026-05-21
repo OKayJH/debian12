@@ -147,6 +147,11 @@ fi
 # overlay folder
 sudo cp -rpf overlay/* $TARGET_ROOTFS_DIR/
 
+# Copy SSH authorized_keys if exists
+if [ -f authorized_keys ]; then
+    sudo cp -pf authorized_keys $TARGET_ROOTFS_DIR/
+fi
+
 # overlay-firmware folder
 sudo cp -rpf overlay-firmware/* $TARGET_ROOTFS_DIR/
 
@@ -212,11 +217,11 @@ ln -sf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime
 if [[ "$TARGET" == "gnome" ]]; then
     \${APT_INSTALL} mpv fire-config-gui
     #Desktop background picture
-    # ln -sf /usr/share/images/desktop-base/lubancat-wallpaper.png /etc/alternatives/desktop-background
+    ln -sf /usr/share/images/desktop-base/lubancat-wallpaper.png /etc/alternatives/desktop-background
 elif [[ "$TARGET" == "xfce" ]]; then
     \${APT_INSTALL} mpv fire-config-gui
     #Desktop background picture
-    chown -hR cat:cat /home/cat/.config
+    chown -hR dlcv:dlcv /home/dlcv/.config || true
     ln -sf /usr/share/images/desktop-base/lubancat-wallpaper.png /etc/alternatives/desktop-background
 elif [[ "$TARGET" == "lxde" ]]; then
     \${APT_INSTALL} mpv fire-config-gui
@@ -346,6 +351,102 @@ fi
 
 # mark package to hold
 apt list --installed | grep -v oldstable | cut -d/ -f1 | xargs apt-mark hold
+
+#---------------DLCV Customization--------------
+
+echo -e "\033[47;36m ---------- DLCV User/Hostname Setup -------- \033[0m"
+# Ensure hostname is DLCVCAM
+echo "DLCVCAM" > /etc/hostname
+sed -i 's/127.0.1.1.*/127.0.1.1\tDLCVCAM/' /etc/hosts
+
+# Ensure dlcv user exists with correct password and groups
+if ! id "dlcv" &>/dev/null; then
+    if id "cat" &>/dev/null; then
+        echo "I: renaming cat user to dlcv"
+        usermod -l dlcv cat
+        usermod -d /home/dlcv -m dlcv
+        groupmod -n dlcv cat 2>/dev/null || true
+    else
+        echo "I: creating dlcv user"
+        adduser --gecos dlcv --disabled-password dlcv
+        usermod -a -G adm,dialout,cdrom,audio,dip,video,plugdev,bluetooth,pulse-access,sudo,systemd-journal,netdev,staff dlcv
+    fi
+fi
+echo "dlcv:dlcvai" | chpasswd
+
+# Remove old cat user if still exists (after rename or if it was separate)
+if id "cat" &>/dev/null; then
+    userdel -r cat 2>/dev/null || true
+fi
+
+# Fix dlcv home ownership
+chown -hR dlcv:dlcv /home/dlcv 2>/dev/null || true
+
+# Update gdm3 autologin to dlcv
+if [ -e /etc/gdm3/daemon.conf ]; then
+    sed -i "s|^#*\\s*AutomaticLoginEnable = .*|AutomaticLoginEnable = true|" /etc/gdm3/daemon.conf
+    sed -i "s|^#*\\s*AutomaticLogin = .*|AutomaticLogin = dlcv|" /etc/gdm3/daemon.conf
+fi
+
+echo -e "\033[47;36m ---------- Install zsh / btop / x11vnc / gnome-terminal -------- \033[0m"
+\${APT_INSTALL} zsh git curl wget btop x11vnc gnome-terminal
+
+echo -e "\033[47;36m ---------- Install oh-my-zsh -------- \033[0m"
+# Install oh-my-zsh for dlcv user
+if [ -d /home/dlcv ]; then
+    (
+        export HOME=/home/dlcv
+        export RUNZSH=no
+        export CHSH=no
+        export ZSH=/home/dlcv/.oh-my-zsh
+        sh -c "\$(curl --retry 3 --connect-timeout 10 -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" || \
+            sh -c "\$(curl --retry 3 --connect-timeout 10 -fsSL https://gitee.com/mirrors/oh-my-zsh/raw/master/tools/install.sh)"
+    )
+    if [ -f /home/dlcv/.zshrc ]; then
+        sed -i 's/^# DISABLE_AUTO_UPDATE="true"/DISABLE_AUTO_UPDATE="true"/' /home/dlcv/.zshrc
+        sed -i 's/^DISABLE_AUTO_UPDATE="false"/DISABLE_AUTO_UPDATE="true"/' /home/dlcv/.zshrc
+    fi
+    chown -hR dlcv:dlcv /home/dlcv/.oh-my-zsh 2>/dev/null || true
+    chown dlcv:dlcv /home/dlcv/.zshrc 2>/dev/null || true
+fi
+
+# Install oh-my-zsh for root user
+export ZSH=/root/.oh-my-zsh
+sh -c "\$(curl --retry 3 --connect-timeout 10 -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" || \
+    sh -c "\$(curl --retry 3 --connect-timeout 10 -fsSL https://gitee.com/mirrors/oh-my-zsh/raw/master/tools/install.sh)"
+if [ -f /root/.zshrc ]; then
+    sed -i 's/^# DISABLE_AUTO_UPDATE="true"/DISABLE_AUTO_UPDATE="true"/' /root/.zshrc
+    sed -i 's/^DISABLE_AUTO_UPDATE="false"/DISABLE_AUTO_UPDATE="true"/' /root/.zshrc
+fi
+
+# Set default shell to zsh for dlcv and root
+chsh -s /bin/zsh dlcv || true
+chsh -s /bin/zsh root || true
+
+echo -e "\033[47;36m ---------- Update dconf for GNOME settings -------- \033[0m"
+dconf update
+
+echo -e "\033[47;36m ---------- Enable x11vnc user services -------- \033[0m"
+# Enable x11vnc services for autostart
+# Services are placed in /etc/systemd/user/ so --global enable works correctly
+systemctl --global enable x11vnc-dlcv.service 2>/dev/null || true
+systemctl --global enable x11vnc-root.service 2>/dev/null || true
+
+echo -e "\033[47;36m ---------- Setup SSH authorized_keys -------- \033[0m"
+# Setup SSH authorized_keys for passwordless login
+if [ -f /authorized_keys ]; then
+    mkdir -p /root/.ssh
+    cp /authorized_keys /root/.ssh/authorized_keys
+    chmod 700 /root/.ssh
+    chmod 600 /root/.ssh/authorized_keys
+
+    mkdir -p /home/dlcv/.ssh
+    cp /authorized_keys /home/dlcv/.ssh/authorized_keys
+    chmod 700 /home/dlcv/.ssh
+    chmod 600 /home/dlcv/.ssh/authorized_keys
+    chown -hR dlcv:dlcv /home/dlcv/.ssh
+    rm -f /authorized_keys
+fi
 
 #---------------Custom Script--------------
 systemctl mask systemd-networkd-wait-online.service

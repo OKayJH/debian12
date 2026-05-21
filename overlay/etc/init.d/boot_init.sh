@@ -192,6 +192,11 @@ board_info() {
 		esac
 	elif [[ "$2" == "rk3576" ]]; then
 			case $1 in
+			TSPI)
+				BOARD_NAME='TaishanPi-3M'
+				BOARD_DTB='tspi-3m-rk3576.dtb'
+				BOARD_uEnv='uEnvTaishanPi3M.txt'
+				;;
 			0000)
 				BOARD_NAME='LubanCat-3'
 				BOARD_DTB='rk3576-lubancat-3.dtb'
@@ -306,6 +311,14 @@ get_index(){
 }
 
 board_id() {
+	# Check if this is TaishanPi hardware first
+	if grep -q "tspi-3m-rk3576" /proc/device-tree/compatible 2>/dev/null; then
+		echo "Detected TaishanPi-3M RK3576 hardware"
+		BOARD_ID="TSPI"
+		SOC_type=$(cat /proc/device-tree/compatible | cut -d,  -f 3 | sed 's/\x0//g')
+		return
+	fi
+
 	ADC_voltage_scale=$(cat /sys/bus/iio/devices/iio\:device0/in_voltage_scale)
 	echo "ADC_voltage_scale:"$ADC_voltage_scale
 
@@ -368,8 +381,15 @@ if [ ! -e "/boot/boot_init" ] ; then
 		cp -f /boot/logo_kernel.bmp /boot/logo.bmp
 		reboot
 	else
-		echo "PARTLABEL=oem  /oem  ext2  defaults  0 2" >> /etc/fstab
-		echo "PARTLABEL=userdata  /userdata  ext2  defaults  0 2" >> /etc/fstab
+		# Auto-format oem/userdata if not formatted
+		if ! blkid /dev/disk/by-partlabel/oem >/dev/null 2>&1; then
+			mkfs.ext4 -F -L oem /dev/disk/by-partlabel/oem || true
+		fi
+		if ! blkid /dev/disk/by-partlabel/userdata >/dev/null 2>&1; then
+			mkfs.ext4 -F -L userdata /dev/disk/by-partlabel/userdata || true
+		fi
+		echo "PARTLABEL=oem  /oem  ext4  defaults,nofail  0 2" >> /etc/fstab
+		echo "PARTLABEL=userdata  /userdata  ext4  defaults,nofail  0 2" >> /etc/fstab
 		touch /boot/boot_init
 	fi
 fi

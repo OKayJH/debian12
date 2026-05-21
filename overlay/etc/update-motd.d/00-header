@@ -4,28 +4,167 @@
 [ -r /etc/lsb-release ] && . /etc/lsb-release
 
 printf "\n"
-echo "\e[1;34m 
-           OO                            OO
-           OOOO                        OOOO
-           OOOOO                     OOOOOO
-           OOOOOOO                 .OOOOOOO
-           OOOOOOOOO              OOOOOOOOO
-           OOOOOOOOOOO          OOOOOOOOOOO
-           OOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOO
-           OOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOO
-           OOOOO\    OOOOOOOOOOOO    /OOOOO
-           OOOOOOOOO    OOOOOO     OOOOOOOO
-           OOOOO/    OOOOOOOOOOOOO   \OOOOO
-           OOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOO
-           OOOOOOOOOOOOOO\￣/OOOOOOOOOOOOOO
-           OOOOOOOOOOOOOOO\/OOOOOOOOOOOOOOO
-           OOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOO 
-  _            _                     ____        _
- | |    _   _ | |__    ____  _____  / ___| ____ | |_   
- | |   | | | || '_ \  / _  ||  _  || |    / _  || __|
- | |___| |_| || |_) || (_| || | | || |___| (_| || |_
- |_____|\__._||_.__/  \__'_||_| |_| \____|\__'_| \__| 
-\e[0m"
+mode=16
+case "${COLORTERM-}" in *truecolor*|*24bit*) mode=rgb ;; esac
+case "${TERM-}" in *256color*) [ "$mode" = "16" ] && mode=256 ;; esac
+
+if command -v python3 >/dev/null 2>&1; then
+	python3 - "$mode" <<'PY'
+import sys
+
+mode = sys.argv[1] if len(sys.argv) > 1 else "16"
+
+logo = """\
+          ██
+        ██████
+        █████████
+        █████████    █
+        █████████    █████
+        █████████    █████████
+        █████████    █████████████
+        █████████     ████████████████
+        █████████         ████████████████
+        █████████             ████████████████
+        █████████                 ████████████████
+        █████████                 ███████████████
+        █████████             ███████████████
+        █████████         ███████████████
+        █████████     ███████████████
+        █████████    ████████████
+        █████████    ████████
+        █████████    ████
+            █████
+                █
+"""
+
+banner = """\
+  ███████   ██         ██████  ██      ██        ██     ██
+ ░██░░░░██ ░██        ██░░░░██░██     ░██       ████   ░██
+ ░██    ░██░██       ██    ░░ ░██     ░██      ██░░██  ░██
+ ░██    ░██░██      ░██       ░░██    ██      ██  ░░██ ░██
+ ░██    ░██░██      ░██        ░░██  ██      ██████████░██
+ ░██    ██ ░██      ░░██    ██  ░░████    ██░██░░░░░░██░██
+ ░███████  ░████████ ░░██████    ░░██    ░██░██     ░██░██
+  ░░░░░░░   ░░░░░░░░   ░░░░░░      ░░     ░░ ░░      ░░ ░░ 
+"""
+
+logo_lines = logo.splitlines()
+banner_lines = banner.splitlines()
+
+top_left = (83, 144, 248)
+top_right = (156, 112, 248)
+bottom_left = (152, 114, 248)
+bottom_right = (216, 85, 247)
+
+def lerp(a, b, t):
+    return int(round(a + (b - a) * t))
+
+def clamp(x, lo, hi):
+    return lo if x < lo else hi if x > hi else x
+
+def rgb_to_xterm256(r, g, b):
+    r6 = clamp(int((r + 25) / 51), 0, 5)
+    g6 = clamp(int((g + 25) / 51), 0, 5)
+    b6 = clamp(int((b + 25) / 51), 0, 5)
+    cube = 16 + 36 * r6 + 6 * g6 + b6
+
+    gray = clamp(int((((r + g + b) / 3) - 8 + 5) / 10), 0, 23)
+    gray_idx = 232 + gray
+
+    def cube_rgb(v):
+        return 0 if v == 0 else 55 + v * 40
+
+    cr, cg, cb = cube_rgb(r6), cube_rgb(g6), cube_rgb(b6)
+    gv = 8 + gray * 10
+    d_cube = (r - cr) ** 2 + (g - cg) ** 2 + (b - cb) ** 2
+    d_gray = (r - gv) ** 2 + (g - gv) ** 2 + (b - gv) ** 2
+    return gray_idx if d_gray < d_cube else cube
+
+def gradient_rgb(x, y):
+    top = (
+        lerp(top_left[0], top_right[0], x),
+        lerp(top_left[1], top_right[1], x),
+        lerp(top_left[2], top_right[2], x),
+    )
+    bottom = (
+        lerp(bottom_left[0], bottom_right[0], x),
+        lerp(bottom_left[1], bottom_right[1], x),
+        lerp(bottom_left[2], bottom_right[2], x),
+    )
+    return (
+        lerp(top[0], bottom[0], y),
+        lerp(top[1], bottom[1], y),
+        lerp(top[2], bottom[2], y),
+    )
+
+def fg_code(r, g, b, t):
+    if mode == "rgb":
+        return f"\033[38;2;{r};{g};{b}m"
+    if mode == "256":
+        return f"\033[38;5;{rgb_to_xterm256(r,g,b)}m"
+    idx = clamp(int(round(t * 3)), 0, 3)
+    c16 = [34, 34, 35, 35][idx]
+    return f"\033[{c16}m"
+
+def render(lines):
+    visible = [(row, col) for row, line in enumerate(lines) for col, ch in enumerate(line) if ch != " "]
+    if not visible:
+        print("\n".join(lines))
+        return
+    min_col = min(col for _, col in visible)
+    max_col = max(col for _, col in visible)
+    width = max(max_col - min_col, 1)
+    height = max(len(lines) - 1, 1)
+    for row, s in enumerate(lines):
+        for i, ch in enumerate(s):
+            if ch == " ":
+                sys.stdout.write(ch)
+                continue
+            x = (i - min_col) / width
+            y = row / height
+            r, g, b = gradient_rgb(x, y)
+            sys.stdout.write(f"{fg_code(r, g, b, (x + y) / 2.0)}{ch}")
+        sys.stdout.write("\033[0m\n")
+
+render(logo_lines)
+sys.stdout.write("\n")
+render(banner_lines)
+PY
+elif command -v awk >/dev/null 2>&1; then
+	cat <<'DLCV.AI'
+          ██
+        ██████
+        █████████
+        █████████    █
+        █████████    █████
+        █████████    █████████
+        █████████    █████████████
+        █████████     ████████████████
+        █████████         ████████████████
+        █████████             ████████████████
+        █████████                 ████████████████
+        █████████                 ███████████████
+        █████████             ███████████████
+        █████████         ███████████████
+        █████████     ███████████████
+        █████████    ████████████
+        █████████    ████████
+        █████████    ████
+            █████
+                █
+
+  ███████   ██         ██████  ██      ██        ██     ██
+ ░██░░░░██ ░██        ██░░░░██░██     ░██       ████   ░██
+ ░██    ░██░██       ██    ░░ ░██     ░██      ██░░██  ░██
+ ░██    ░██░██      ░██       ░░██    ██      ██  ░░██ ░██
+ ░██    ░██░██      ░██        ░░██  ██      ██████████░██
+ ░██    ██ ░██      ░░██    ██  ░░████    ██░██░░░░░░██░██
+ ░███████  ░████████ ░░██████    ░░██    ░██░██     ░██░██
+  ░░░░░░░   ░░░░░░░░   ░░░░░░      ░░     ░░ ░░      ░░ ░░ 
+DLCV.AI
+fi
+
+printf '\033[0m\n'
 
 if [ -z "$DISTRIB_DESCRIPTION" ] && [ -x /usr/bin/lsb_release ]; then
 	# Fall back to using the very slow lsb_release utility
@@ -33,3 +172,5 @@ if [ -z "$DISTRIB_DESCRIPTION" ] && [ -x /usr/bin/lsb_release ]; then
 fi
 printf "\n"
 printf "Welcome to %s (%s %s %s)\n" "$DISTRIB_DESCRIPTION" "$(uname -o)" "$(uname -r)" "$(uname -m)"
+
+
