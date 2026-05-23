@@ -382,10 +382,11 @@ fi
 # Fix dlcv home ownership
 chown -hR dlcv:dlcv /home/dlcv 2>/dev/null || true
 
-# Update gdm3 autologin to dlcv
+# Update gdm3 autologin to dlcv and force Xorg (disable Wayland for x11vnc compatibility)
 if [ -e /etc/gdm3/daemon.conf ]; then
     sed -i "s|^#*\\s*AutomaticLoginEnable = .*|AutomaticLoginEnable = true|" /etc/gdm3/daemon.conf
     sed -i "s|^#*\\s*AutomaticLogin = .*|AutomaticLogin = dlcv|" /etc/gdm3/daemon.conf
+    sed -i "s|^#*\\s*WaylandEnable = .*|WaylandEnable = false|" /etc/gdm3/daemon.conf
 fi
 
 echo -e "\033[47;36m ---------- Install zsh / btop / x11vnc / gnome-terminal -------- \033[0m"
@@ -426,11 +427,20 @@ chsh -s /bin/zsh root || true
 echo -e "\033[47;36m ---------- Update dconf for GNOME settings -------- \033[0m"
 dconf update
 
-echo -e "\033[47;36m ---------- Enable x11vnc user services -------- \033[0m"
-# Enable x11vnc services for autostart
+echo -e "\033[47;36m ---------- Setup VNC password and enable x11vnc service -------- \033[0m"
+# Pre-generate VNC password for dlcv user
+mkdir -p /home/dlcv/.vnc
+x11vnc -storepasswd "dlcvai" /home/dlcv/.vnc/passwd
+chown -R dlcv:dlcv /home/dlcv/.vnc
+chmod 600 /home/dlcv/.vnc/passwd
+chmod 755 /home/dlcv/.vnc
+
+# Enable x11vnc-dlcv service for autostart
 # Services are placed in /etc/systemd/user/ so --global enable works correctly
 systemctl --global enable x11vnc-dlcv.service 2>/dev/null || true
-systemctl --global enable x11vnc-root.service 2>/dev/null || true
+# Also create symlink manually in case --global enable fails in chroot
+mkdir -p /etc/systemd/user/graphical-session.target.wants
+ln -sf /etc/systemd/user/x11vnc-dlcv.service /etc/systemd/user/graphical-session.target.wants/x11vnc-dlcv.service
 
 echo -e "\033[47;36m ---------- Setup SSH authorized_keys -------- \033[0m"
 # Setup SSH authorized_keys for passwordless login

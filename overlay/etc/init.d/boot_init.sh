@@ -197,6 +197,11 @@ board_info() {
 				BOARD_DTB='tspi-3m-rk3576.dtb'
 				BOARD_uEnv='uEnvTaishanPi3M.txt'
 				;;
+			DLCVCAM)
+				BOARD_NAME='DLCVCAM-RK3576'
+				BOARD_DTB='dlcvcam-rk3576.dtb'
+				BOARD_uEnv='uEnvDLCVCAM.txt'
+				;;
 			0000)
 				BOARD_NAME='LubanCat-3'
 				BOARD_DTB='rk3576-lubancat-3.dtb'
@@ -315,6 +320,14 @@ board_id() {
 	if grep -q "tspi-3m-rk3576" /proc/device-tree/compatible 2>/dev/null; then
 		echo "Detected TaishanPi-3M RK3576 hardware"
 		BOARD_ID="TSPI"
+		SOC_type=$(cat /proc/device-tree/compatible | cut -d,  -f 3 | sed 's/\x0//g')
+		return
+	fi
+
+	# Check if this is DLCVCAM hardware
+	if grep -q "dlcvcam-rk3576" /proc/device-tree/compatible 2>/dev/null; then
+		echo "Detected DLCVCAM RK3576 hardware"
+		BOARD_ID="DLCVCAM"
 		SOC_type=$(cat /proc/device-tree/compatible | cut -d,  -f 3 | sed 's/\x0//g')
 		return
 	fi
