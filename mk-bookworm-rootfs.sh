@@ -161,6 +161,78 @@ if [ "$VERSION" == "debug" ]; then
     sudo cp -rpf overlay-debug/* $TARGET_ROOTFS_DIR/
 fi
 
+#---------------DLCV Environment Pre-extract--------------
+DLCV_ENV_7Z="/share/4-智能相机/0-环境安装/dlcv_env.7z"
+if [ -f "$DLCV_ENV_7Z" ] && command -v 7zz >/dev/null 2>&1; then
+    echo -e "\033[47;36m ---------- Pre-extracting DLCV environment -------- \033[0m"
+    sudo mkdir -p $TARGET_ROOTFS_DIR/root/dlcv
+    sudo rm -rf $TARGET_ROOTFS_DIR/root/dlcv_extract_tmp
+    sudo 7zz x -y "$DLCV_ENV_7Z" -o$TARGET_ROOTFS_DIR/root/dlcv_extract_tmp >/dev/null 2>&1
+    if [ -d "$TARGET_ROOTFS_DIR/root/dlcv_extract_tmp/dlcv" ]; then
+        sudo cp -a $TARGET_ROOTFS_DIR/root/dlcv_extract_tmp/dlcv/* $TARGET_ROOTFS_DIR/root/dlcv/
+        sudo rm -rf $TARGET_ROOTFS_DIR/root/dlcv_extract_tmp
+
+        # Fix python symlinks (7z may create empty files for dangerous links)
+        PYTHON_BIN="/root/dlcv/.python-runtime/bin/python3.11"
+        if [ -e "$TARGET_ROOTFS_DIR$PYTHON_BIN" ]; then
+            sudo ln -sf "$PYTHON_BIN" "$TARGET_ROOTFS_DIR/root/dlcv/bin/python"
+            sudo ln -sf python "$TARGET_ROOTFS_DIR/root/dlcv/bin/python3"
+            sudo ln -sf python "$TARGET_ROOTFS_DIR/root/dlcv/bin/python3.11"
+        fi
+
+        # Fix absolute path symlinks broken by 7z extraction
+        sudo bash -c '
+            find "$0/root/dlcv" -type l | while read -r LINK; do
+                T=$(readlink "$LINK")
+                if echo "$T" | grep -q "/root/root/dlcv"; then
+                    NT=$(echo "$T" | sed "s|/root/root/dlcv|/root/dlcv|")
+                    ln -snf "$NT" "$LINK"
+                elif echo "$T" | grep -q "^/root/usr/lib"; then
+                    NT=$(echo "$T" | sed "s|^/root/usr/lib|/usr/lib|")
+                    [ -e "$NT" ] && ln -snf "$NT" "$LINK"
+                fi
+            done
+        ' "$TARGET_ROOTFS_DIR"
+
+        # Deploy librknnrt.so
+        if [ -f "$TARGET_ROOTFS_DIR/root/dlcv/bin/librknnrt.so" ]; then
+            sudo cp -f "$TARGET_ROOTFS_DIR/root/dlcv/bin/librknnrt.so" "$TARGET_ROOTFS_DIR/usr/lib/librknnrt.so"
+            sudo chmod 644 "$TARGET_ROOTFS_DIR/usr/lib/librknnrt.so"
+        fi
+
+        # Set executable permissions
+        sudo chmod +x "$TARGET_ROOTFS_DIR/root/dlcv/bin/pressure_test" \
+            "$TARGET_ROOTFS_DIR/root/dlcv/bin/rtop" \
+            "$TARGET_ROOTFS_DIR/root/dlcv/bin/debug" \
+            "$TARGET_ROOTFS_DIR/root/dlcv/bin/dlcv_infer_cpp_qt_demo" \
+            "$TARGET_ROOTFS_DIR/root/dlcv/bin/ai_model_accelerator.bin" 2>/dev/null || true
+
+        # Configure activate script LD_LIBRARY_PATH
+        ACTIVATE_FILE="$TARGET_ROOTFS_DIR/root/dlcv/bin/activate"
+        if [ -f "$ACTIVATE_FILE" ] && ! grep -qF "DLCV_LDPATH" "$ACTIVATE_FILE" 2>/dev/null; then
+            sudo tee -a "$ACTIVATE_FILE" >/dev/null << 'ACTIVATE_EOF'
+
+# DLCV local library path
+DLCV_LDPATH="/root/dlcv/bin/lib:/root/dlcv/lib:/root/dlcv/bin"
+if [ -z "${LD_LIBRARY_PATH-}" ] ; then
+    LD_LIBRARY_PATH="$DLCV_LDPATH"
+else
+    LD_LIBRARY_PATH="$DLCV_LDPATH:$LD_LIBRARY_PATH"
+fi
+export LD_LIBRARY_PATH
+ACTIVATE_EOF
+        fi
+
+        # Copy Sentinel driver deb to /tmp for chroot install
+        sudo bash -c 'find "$0/root/dlcv/bin" -maxdepth 1 -name "aksusbd_*_arm64.deb" -exec cp {} "$0/tmp/" \; ' "$TARGET_ROOTFS_DIR"
+
+        # Fix ownership
+        sudo chown -hR 0:0 $TARGET_ROOTFS_DIR/root/dlcv
+    else
+        echo -e "\033[41;36m DLCV environment extraction failed \033[0m"
+    fi
+fi
+
 echo -e "\033[47;36m Change root.....................\033[0m"
 ID=$(stat --format %u $TARGET_ROOTFS_DIR)
 
@@ -348,6 +420,38 @@ fi
 
 # HACK to disable the kernel logo on bootup
 #sed -i "/exit 0/i \ echo 3 > /sys/class/graphics/fb0/blank" /etc/rc.local
+
+#---------------DLCV Environment Installation--------------
+
+echo -e "\033[47;36m ---------- Install DLCV runtime dependencies -------- \033[0m"
+\${APT_INSTALL} libopencv-dev libgomp1 qtbase5-dev python3-gi gir1.2-gstreamer-1.0 gstreamer1.0-tools gstreamer1.0-plugins-base gstreamer1.0-plugins-good 7zip || true
+
+echo -e "\033[47;36m ---------- Install Sentinel dongle driver ---------- \033[0m"
+DONGLE_DEB=\$(find /tmp -maxdepth 1 -name 'aksusbd_*_arm64.deb' | head -n 1)
+if [ -n "\$DONGLE_DEB" ]; then
+    dpkg -i "\$DONGLE_DEB" || apt-get install -f -y
+    systemctl enable hasplmd.service 2>/dev/null || true
+    rm -f "\$DONGLE_DEB"
+fi
+
+ldconfig
+
+# Fix gi module symlink
+if [ -d /usr/lib/python3/dist-packages/gi ] && [ -d /root/dlcv/lib/python3.11/site-packages ]; then
+    rm -f /root/dlcv/lib/python3.11/site-packages/gi
+    ln -sf /usr/lib/python3/dist-packages/gi /root/dlcv/lib/python3.11/site-packages/gi
+fi
+
+# Activate environment in shell configs
+ACTIVATE_LINE="source /root/dlcv/bin/activate"
+for RC in /root/.bashrc /root/.zshrc /home/dlcv/.bashrc /home/dlcv/.zshrc; do
+    if [ -f "\$RC" ] && ! grep -qF "\$ACTIVATE_LINE" "\$RC" 2>/dev/null; then
+        echo "\$ACTIVATE_LINE" >> "\$RC"
+    fi
+done
+
+# Fix DLCV environment ownership
+chown -hR dlcv:dlcv /root/dlcv 2>/dev/null || true
 
 # mark package to hold
 apt list --installed | grep -v oldstable | cut -d/ -f1 | xargs apt-mark hold
