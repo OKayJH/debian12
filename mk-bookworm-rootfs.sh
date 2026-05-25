@@ -168,7 +168,7 @@ if [ -f "$DLCV_ENV_7Z" ] && command -v 7zz >/dev/null 2>&1; then
     echo -e "\033[47;36m ---------- Pre-extracting DLCV environment -------- \033[0m"
     sudo mkdir -p $TARGET_ROOTFS_DIR/root/dlcv
     sudo rm -rf $TARGET_ROOTFS_DIR/root/dlcv_extract_tmp
-    sudo 7zz x -y "$DLCV_ENV_7Z" -o$TARGET_ROOTFS_DIR/root/dlcv_extract_tmp >/dev/null 2>&1
+    sudo 7zz x -y "$DLCV_ENV_7Z" -o$TARGET_ROOTFS_DIR/root/dlcv_extract_tmp >/dev/null 2>&1 || true
     if [ -d "$TARGET_ROOTFS_DIR/root/dlcv_extract_tmp/dlcv" ]; then
         sudo cp -a $TARGET_ROOTFS_DIR/root/dlcv_extract_tmp/dlcv/* $TARGET_ROOTFS_DIR/root/dlcv/
         sudo rm -rf $TARGET_ROOTFS_DIR/root/dlcv_extract_tmp
