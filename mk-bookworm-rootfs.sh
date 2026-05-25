@@ -1,4 +1,5 @@
 #!/bin/bash -e
+set -o pipefail
 
 # Directory contains the target rootfs
 TARGET_ROOTFS_DIR="binary"
@@ -236,7 +237,7 @@ fi
 echo -e "\033[47;36m Change root.....................\033[0m"
 ID=$(stat --format %u $TARGET_ROOTFS_DIR)
 
-cat << EOF | sudo chroot $TARGET_ROOTFS_DIR
+cat << EOF | sudo chroot $TARGET_ROOTFS_DIR /bin/bash
 
 # Fixup owners
 if [ "$ID" -ne 0 ]; then
