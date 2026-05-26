@@ -168,12 +168,14 @@ if [ -f "$DLCV_ENV_7Z" ] && command -v 7zz >/dev/null 2>&1; then
     echo -e "\033[47;36m ---------- Pre-extracting DLCV environment -------- \033[0m"
     sudo mkdir -p $TARGET_ROOTFS_DIR/root/dlcv
     sudo rm -rf $TARGET_ROOTFS_DIR/root/dlcv_extract_tmp
+    set +e
     sudo 7zz x -y "$DLCV_ENV_7Z" -o"$TARGET_ROOTFS_DIR/root/dlcv_extract_tmp" >/dev/null 2>&1
     7ZZ_EXIT=$?
+    set -e
     if [ $7ZZ_EXIT -ge 2 ]; then
-        echo -e "\033[41;36m DLCV environment extraction failed (7zz exit code: $7ZZ_EXIT) \033[0m"
-        sudo rm -rf "$TARGET_ROOTFS_DIR/root/dlcv_extract_tmp"
-    elif [ -d "$TARGET_ROOTFS_DIR/root/dlcv_extract_tmp/dlcv" ]; then
+        echo -e "\033[43;36m WARNING: 7zz exited with code $7ZZ_EXIT, continuing anyway \033[0m"
+    fi
+    if [ -d "$TARGET_ROOTFS_DIR/root/dlcv_extract_tmp/dlcv" ]; then
         sudo cp -a $TARGET_ROOTFS_DIR/root/dlcv_extract_tmp/dlcv/. $TARGET_ROOTFS_DIR/root/dlcv/
         sudo rm -rf $TARGET_ROOTFS_DIR/root/dlcv_extract_tmp
 
