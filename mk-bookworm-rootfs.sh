@@ -318,6 +318,9 @@ echo -e "\033[47;36m ----- power management ----- \033[0m"
 cp /etc/Powermanager/triggerhappy.service  /lib/systemd/system/triggerhappy.service
 sed -i "s/#HandlePowerKey=.*/HandlePowerKey=ignore/" /etc/systemd/logind.conf
 
+echo -e "\033[47;36m ---------- Install common tools -------- \033[0m"
+\${APT_INSTALL} aptitude cifs-utils graphviz nano nload p7zip-full screen tmux tree
+
 echo -e "\033[47;36m ----------- RGA  ----------- \033[0m"
 \${APT_INSTALL} /packages/rga2/*.deb
 
@@ -516,6 +519,7 @@ if [ -d /home/dlcv ]; then
     if [ -f /home/dlcv/.zshrc ]; then
         sed -i 's/^# DISABLE_AUTO_UPDATE="true"/DISABLE_AUTO_UPDATE="true"/' /home/dlcv/.zshrc
         sed -i 's/^DISABLE_AUTO_UPDATE="false"/DISABLE_AUTO_UPDATE="true"/' /home/dlcv/.zshrc
+        echo "zstyle ':omz:update' mode disabled" >> /home/dlcv/.zshrc
     fi
     chown -hR dlcv:dlcv /home/dlcv/.oh-my-zsh 2>/dev/null || true
     chown dlcv:dlcv /home/dlcv/.zshrc 2>/dev/null || true
@@ -528,6 +532,7 @@ sh -c "\$(curl --retry 3 --connect-timeout 10 -fsSL https://raw.githubuserconten
 if [ -f /root/.zshrc ]; then
     sed -i 's/^# DISABLE_AUTO_UPDATE="true"/DISABLE_AUTO_UPDATE="true"/' /root/.zshrc
     sed -i 's/^DISABLE_AUTO_UPDATE="false"/DISABLE_AUTO_UPDATE="true"/' /root/.zshrc
+    echo "zstyle ':omz:update' mode disabled" >> /root/.zshrc
 fi
 
 # Set default shell to zsh for dlcv and root
