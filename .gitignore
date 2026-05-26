@@ -2,3 +2,9 @@ binary/
 *.tar.gz
 *.img
 *.lock
+*.log
+*.7z
+*.zip
+*.xz
+*.gz
+build_rootfs.sh
