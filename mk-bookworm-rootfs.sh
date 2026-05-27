@@ -453,14 +453,6 @@ if [ -d /usr/lib/python3/dist-packages/gi ] && [ -d /root/dlcv/lib/python3.11/si
     ln -sf /usr/lib/python3/dist-packages/gi /root/dlcv/lib/python3.11/site-packages/gi
 fi
 
-# Activate environment in shell configs
-ACTIVATE_LINE="source /root/dlcv/bin/activate"
-for RC in /root/.bashrc /root/.zshrc /home/dlcv/.bashrc /home/dlcv/.zshrc; do
-    if [ -f "\$RC" ] && ! grep -qF "\$ACTIVATE_LINE" "\$RC" 2>/dev/null; then
-        echo "\$ACTIVATE_LINE" >> "\$RC"
-    fi
-done
-
 # Fix DLCV environment ownership
 chown -hR dlcv:dlcv /root/dlcv 2>/dev/null || true
 
@@ -540,6 +532,15 @@ fi
 # Set default shell to zsh for dlcv and root
 chsh -s /bin/zsh dlcv || true
 chsh -s /bin/zsh root || true
+
+# Activate environment in shell configs (must run after oh-my-zsh and user creation)
+ACTIVATE_LINE="source /root/dlcv/bin/activate"
+for RC in /root/.bashrc /root/.zshrc /home/dlcv/.bashrc /home/dlcv/.zshrc; do
+    touch "\$RC" 2>/dev/null || true
+    if ! grep -qF "\$ACTIVATE_LINE" "\$RC" 2>/dev/null; then
+        echo "\$ACTIVATE_LINE" >> "\$RC"
+    fi
+done
 
 echo -e "\033[47;36m ---------- Update dconf for GNOME settings -------- \033[0m"
 dconf update

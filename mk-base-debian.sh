@@ -52,10 +52,12 @@ else
 	BUILD_VERSION=$TARGET
 fi
 
-if [ -e linaro-$RELEASE-$TARGET-$ARCH-alip-*.tar.gz ]; then
-	rm linaro-$RELEASE-$TARGET-$ARCH-alip-*.tar.gz
+# Cache: skip rebuild if base tar.gz already exists
+BASE_TAR_GZ=$(ls linaro-$RELEASE-$TARGET-$ARCH-alip-*.tar.gz 2>/dev/null | head -n 1)
+if [ -n "$BASE_TAR_GZ" ]; then
+    echo -e "\033[47;36m Base tar.gz already exists: $BASE_TAR_GZ, skipping rebuild. \033[0m"
+    exit 0
 fi
-
 
 cd ubuntu-build-service/$RELEASE-$BUILD_VERSION-$ARCH
 
