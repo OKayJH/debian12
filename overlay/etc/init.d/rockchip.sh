@@ -100,6 +100,11 @@ boardname="${compatible%%rockchip,*}"
 
 /etc/init.d/boot_init.sh
 
+# DLCVCAM: setup unique hostname and MAC based on hardware serial
+if [ -x /usr/local/bin/dlcvcam-init.sh ]; then
+    /usr/local/bin/dlcvcam-init.sh
+fi
+
 sleep 3s
 
 # first boot configure
