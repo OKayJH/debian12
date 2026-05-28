@@ -201,6 +201,12 @@ if [ -f "$DLCV_ENV_7Z" ] && command -v 7zz >/dev/null 2>&1; then
             done
         ' "$TARGET_ROOTFS_DIR"
 
+        # Fix lib64 duplicate directory (7z may turn symlink into actual directory)
+        if [ -d "$TARGET_ROOTFS_DIR/root/dlcv/lib64" ] && [ ! -L "$TARGET_ROOTFS_DIR/root/dlcv/lib64" ]; then
+            sudo rm -rf "$TARGET_ROOTFS_DIR/root/dlcv/lib64"
+            sudo ln -s lib "$TARGET_ROOTFS_DIR/root/dlcv/lib64"
+        fi
+
         # Deploy librknnrt.so
         if [ -f "$TARGET_ROOTFS_DIR/root/dlcv/bin/librknnrt.so" ]; then
             sudo cp -f "$TARGET_ROOTFS_DIR/root/dlcv/bin/librknnrt.so" "$TARGET_ROOTFS_DIR/usr/lib/librknnrt.so"
@@ -232,6 +238,18 @@ ACTIVATE_EOF
 
         # Copy Sentinel driver deb to /tmp for chroot install
         sudo bash -c 'find "$0/root/dlcv/bin" -maxdepth 1 -name "aksusbd_*_arm64.deb" -exec cp {} "$0/tmp/" \; ' "$TARGET_ROOTFS_DIR"
+
+        # Copy SenseShield driver deb to /tmp for chroot install
+        SENSESHIELD_DEB="/share/4-智能相机/0-环境安装/senseshield-lcc-2.7.5.69040-arm64.deb"
+        if [ -f "$SENSESHIELD_DEB" ]; then
+            sudo cp -f "$SENSESHIELD_DEB" "$TARGET_ROOTFS_DIR/tmp/"
+        fi
+
+        # Copy install_kimi.sh to /scripts for chroot install
+        if [ -f "scripts/install_kimi.sh" ]; then
+            sudo mkdir -p "$TARGET_ROOTFS_DIR/scripts"
+            sudo cp -f "scripts/install_kimi.sh" "$TARGET_ROOTFS_DIR/scripts/"
+        fi
 
         # Fix ownership
         sudo chown -hR 0:0 $TARGET_ROOTFS_DIR/root/dlcv
@@ -435,7 +453,7 @@ fi
 #---------------DLCV Environment Installation--------------
 
 echo -e "\033[47;36m ---------- Install DLCV runtime dependencies -------- \033[0m"
-\${APT_INSTALL} libopencv-dev libgomp1 qtbase5-dev python3-gi gir1.2-gstreamer-1.0 gstreamer1.0-tools gstreamer1.0-plugins-base gstreamer1.0-plugins-good 7zip || true
+\${APT_INSTALL} libopencv-dev libgomp1 qtbase5-dev python3-gi gir1.2-gstreamer-1.0 gstreamer1.0-tools gstreamer1.0-plugins-base gstreamer1.0-plugins-good 7zip build-essential cmake ninja-build patchelf ccache libopencv-contrib-dev libsodium-dev qtbase5-dev-tools qt5-qmake qt6-base-dev libqt5widgets5 libqt5gui5 libqt5core5a libgl1-mesa-dev python3-dev zram-tools chromium-x11 || true
 
 echo -e "\033[47;36m ---------- Install Sentinel dongle driver ---------- \033[0m"
 DONGLE_DEB=\$(find /tmp -maxdepth 1 -name 'aksusbd_*_arm64.deb' | head -n 1)
@@ -443,6 +461,15 @@ if [ -n "\$DONGLE_DEB" ]; then
     dpkg -i "\$DONGLE_DEB" || apt-get install -f -y
     systemctl enable hasplmd.service 2>/dev/null || true
     rm -f "\$DONGLE_DEB"
+fi
+
+echo -e "\033[47;36m ---------- Install SenseShield dongle driver ---------- \033[0m"
+SENSESHIELD_DEB=\$(find /tmp -maxdepth 1 -name 'senseshield-lcc-*-arm64.deb' | head -n 1)
+if [ -n "\$SENSESHIELD_DEB" ]; then
+    dpkg -i "\$SENSESHIELD_DEB" || apt-get install -f -y
+    systemctl enable senseshield.service 2>/dev/null || true
+    systemctl enable virboxlcc.service 2>/dev/null || true
+    rm -f "\$SENSESHIELD_DEB"
 fi
 
 ldconfig
@@ -455,6 +482,9 @@ fi
 
 # Fix DLCV environment ownership
 chown -hR dlcv:dlcv /root/dlcv 2>/dev/null || true
+
+echo -e "\033[47;36m ---------- Configure ccache ---------- \033[0m"
+ccache --max-size=5G 2>/dev/null || true
 
 # mark package to hold
 apt list --installed | grep -v oldstable | cut -d/ -f1 | xargs apt-mark hold
@@ -542,6 +572,23 @@ for RC in /root/.bashrc /root/.zshrc /home/dlcv/.bashrc /home/dlcv/.zshrc; do
     fi
 done
 
+echo -e "\033[47;36m ---------- Configure Python environment for non-interactive SSH ---------- \033[0m"
+# Create /root/.zshenv for non-interactive zsh to export PATH/LD_LIBRARY_PATH
+cat > /root/.zshenv << 'ZSHEV_EOF'
+if [[ ! -o interactive ]]; then
+    export VIRTUAL_ENV='/root/dlcv'
+    export PATH="/root/dlcv/bin:$PATH"
+    export LD_LIBRARY_PATH="/root/dlcv/lib:/root/dlcv/bin:/root/dlcv/lib/python3.11/site-packages/dlcvpro_infer:/root/dlcv/lib/python3.11/site-packages/torch/lib"
+fi
+ZSHEV_EOF
+
+# Create /usr/local/bin/python wrapper with LF line endings
+cat > /usr/local/bin/python << 'PYTHON_EOF'
+#!/bin/bash
+exec /root/dlcv/bin/python3 "$@"
+PYTHON_EOF
+chmod +x /usr/local/bin/python
+
 echo -e "\033[47;36m ---------- Update dconf for GNOME settings -------- \033[0m"
 dconf update
 
@@ -580,6 +627,63 @@ fi
 systemctl mask systemd-networkd-wait-online.service
 systemctl mask NetworkManager-wait-online.service
 rm /lib/systemd/system/wpa_supplicant@.service
+
+echo -e "\033[47;36m ---------- Configure zram and swap ---------- \033[0m"
+# zram: 25% of memory (~1GB on RK3576 4GB)
+\${APT_INSTALL} zram-tools 2>/dev/null || true
+cat > /etc/default/zramswap << 'ZRAM_EOF'
+ALGO=zstd
+PERCENT=25
+ZRAM_EOF
+systemctl enable zramswap.service 2>/dev/null || true
+
+# Dynamic swap setup: 25% of RAM, max 2GB
+# Do NOT create fixed-size swapfile in rootfs; use systemd oneshot service
+cat > /usr/local/bin/setup-swap.sh << 'SWAP_EOF'
+#!/bin/bash
+set -e
+TOTAL_MEM_MB=$(free -m | awk '/^Mem:/{print $2}')
+SWAP_SIZE_MB=$(( TOTAL_MEM_MB / 4 ))
+[ "$SWAP_SIZE_MB" -gt 2048 ] && SWAP_SIZE_MB=2048
+
+if [ -f /swapfile ]; then
+    CURRENT_SIZE_MB=$(stat -c %s /swapfile | awk '{print int($1/1024/1024)}')
+    if [ "$CURRENT_SIZE_MB" != "$SWAP_SIZE_MB" ]; then
+        swapoff /swapfile 2>/dev/null || true
+        rm -f /swapfile
+    fi
+fi
+
+if [ ! -f /swapfile ]; then
+    fallocate -l ${SWAP_SIZE_MB}M /swapfile
+    chmod 600 /swapfile
+    mkswap /swapfile
+    swapon /swapfile
+fi
+SWAP_EOF
+chmod +x /usr/local/bin/setup-swap.sh
+
+cat > /etc/systemd/system/dlcv-swap.service << 'SERVICE_EOF'
+[Unit]
+Description=DLCV Dynamic Swap Setup
+After=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/setup-swap.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+SERVICE_EOF
+
+systemctl enable dlcv-swap.service 2>/dev/null || true
+
+echo -e "\033[47;36m ---------- Install kimi-cli ---------- \033[0m"
+if [ -f /scripts/install_kimi.sh ]; then
+    bash /scripts/install_kimi.sh || true
+    rm -f /scripts/install_kimi.sh
+fi
 
 #---------------Clean--------------
 if [ -e "/usr/lib/arm-linux-gnueabihf/dri" ] ;
