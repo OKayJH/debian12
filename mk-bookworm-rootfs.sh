@@ -163,67 +163,97 @@ if [ "$VERSION" == "debug" ]; then
 fi
 
 #---------------DLCV Environment Pre-extract--------------
+DLCV_ENV_TAR="/share/4-智能相机/0-环境安装/dlcv_env.tar.gz"
 DLCV_ENV_7Z="/share/4-智能相机/0-环境安装/dlcv_env.7z"
-if [ -f "$DLCV_ENV_7Z" ] && command -v 7zz >/dev/null 2>&1; then
-    echo -e "\033[47;36m ---------- Pre-extracting DLCV environment -------- \033[0m"
+
+if [ -f "$DLCV_ENV_TAR" ]; then
+    echo -e "\033[47;36m ---------- Pre-extracting DLCV environment (tar.gz) -------- \033[0m"
+    sudo mkdir -p $TARGET_ROOTFS_DIR/root/dlcv
+    sudo rm -rf $TARGET_ROOTFS_DIR/root/dlcv_extract_tmp
+    sudo mkdir -p $TARGET_ROOTFS_DIR/root/dlcv_extract_tmp
+    sudo tar -xzf "$DLCV_ENV_TAR" -C "$TARGET_ROOTFS_DIR/root/dlcv_extract_tmp" 2>/dev/null || true
+    if [ -d "$TARGET_ROOTFS_DIR/root/dlcv_extract_tmp/root/dlcv" ]; then
+        sudo cp -a $TARGET_ROOTFS_DIR/root/dlcv_extract_tmp/root/dlcv/. $TARGET_ROOTFS_DIR/root/dlcv/
+        sudo rm -rf $TARGET_ROOTFS_DIR/root/dlcv_extract_tmp
+    elif [ -d "$TARGET_ROOTFS_DIR/root/dlcv_extract_tmp/dlcv" ]; then
+        sudo cp -a $TARGET_ROOTFS_DIR/root/dlcv_extract_tmp/dlcv/. $TARGET_ROOTFS_DIR/root/dlcv/
+        sudo rm -rf $TARGET_ROOTFS_DIR/root/dlcv_extract_tmp
+    fi
+elif [ -f "$DLCV_ENV_7Z" ] && command -v 7zz >/dev/null 2>&1; then
+    echo -e "\033[47;36m ---------- Pre-extracting DLCV environment (7z) -------- \033[0m"
     sudo mkdir -p $TARGET_ROOTFS_DIR/root/dlcv
     sudo rm -rf $TARGET_ROOTFS_DIR/root/dlcv_extract_tmp
     set +e
     sudo 7zz x -y "$DLCV_ENV_7Z" -o"$TARGET_ROOTFS_DIR/root/dlcv_extract_tmp" >/dev/null 2>&1
-    7ZZ_EXIT=$?
+    EXTRACT_EXIT=$?
     set -e
-    if [ $7ZZ_EXIT -ge 2 ]; then
-        echo -e "\033[43;36m WARNING: 7zz exited with code $7ZZ_EXIT, continuing anyway \033[0m"
+    if [ $EXTRACT_EXIT -ge 2 ]; then
+        echo -e "\033[43;36m WARNING: 7zz exited with code $EXTRACT_EXIT, continuing anyway \033[0m"
     fi
     if [ -d "$TARGET_ROOTFS_DIR/root/dlcv_extract_tmp/dlcv" ]; then
         sudo cp -a $TARGET_ROOTFS_DIR/root/dlcv_extract_tmp/dlcv/. $TARGET_ROOTFS_DIR/root/dlcv/
         sudo rm -rf $TARGET_ROOTFS_DIR/root/dlcv_extract_tmp
+    fi
+fi
 
-        # Fix python symlinks (7z may create empty files for dangerous links)
-        PYTHON_BIN="/root/dlcv/.python-runtime/bin/python3.11"
-        if [ -e "$TARGET_ROOTFS_DIR$PYTHON_BIN" ]; then
-            sudo ln -sf "$PYTHON_BIN" "$TARGET_ROOTFS_DIR/root/dlcv/bin/python"
-            sudo ln -sf python "$TARGET_ROOTFS_DIR/root/dlcv/bin/python3"
-            sudo ln -sf python "$TARGET_ROOTFS_DIR/root/dlcv/bin/python3.11"
-        fi
+if [ -d "$TARGET_ROOTFS_DIR/root/dlcv/bin" ]; then
+    # Fix python symlinks (7z may create empty files for dangerous links)
+    PYTHON_BIN="/root/dlcv/.python-runtime/bin/python3.11"
+    if [ -e "$TARGET_ROOTFS_DIR$PYTHON_BIN" ]; then
+        sudo ln -sf "$PYTHON_BIN" "$TARGET_ROOTFS_DIR/root/dlcv/bin/python"
+        sudo ln -sf python "$TARGET_ROOTFS_DIR/root/dlcv/bin/python3"
+        sudo ln -sf python "$TARGET_ROOTFS_DIR/root/dlcv/bin/python3.11"
+    fi
 
-        # Fix absolute path symlinks broken by 7z extraction
-        sudo bash -c '
-            find "$0/root/dlcv" -type l | while read -r LINK; do
-                T=$(readlink "$LINK")
-                if echo "$T" | grep -q "/root/root/dlcv"; then
-                    NT=$(echo "$T" | sed "s|/root/root/dlcv|/root/dlcv|")
-                    ln -snf "$NT" "$LINK"
-                elif echo "$T" | grep -q "^/root/usr/lib"; then
-                    NT=$(echo "$T" | sed "s|^/root/usr/lib|/usr/lib|")
-                    [ -e "$0$NT" ] && ln -snf "$NT" "$LINK"
-                fi
-            done
-        ' "$TARGET_ROOTFS_DIR"
+    # Fix absolute path symlinks broken by 7z extraction
+    sudo bash -c '
+        find "$0/root/dlcv" -type l | while read -r LINK; do
+            T=$(readlink "$LINK")
+            if echo "$T" | grep -q "/root/root/dlcv"; then
+                NT=$(echo "$T" | sed "s|/root/root/dlcv|/root/dlcv|")
+                ln -snf "$NT" "$LINK"
+            elif echo "$T" | grep -q "^/root/usr/lib"; then
+                NT=$(echo "$T" | sed "s|^/root/usr/lib|/usr/lib|")
+                [ -e "$0$NT" ] && ln -snf "$NT" "$LINK"
+            fi
+        done
+    ' "$TARGET_ROOTFS_DIR"
 
-        # Fix lib64 duplicate directory (7z may turn symlink into actual directory)
-        if [ -d "$TARGET_ROOTFS_DIR/root/dlcv/lib64" ] && [ ! -L "$TARGET_ROOTFS_DIR/root/dlcv/lib64" ]; then
-            sudo rm -rf "$TARGET_ROOTFS_DIR/root/dlcv/lib64"
-            sudo ln -s lib "$TARGET_ROOTFS_DIR/root/dlcv/lib64"
-        fi
+    # Fix lib64 duplicate directory (7z may turn symlink into actual directory)
+    if [ -d "$TARGET_ROOTFS_DIR/root/dlcv/lib64" ] && [ ! -L "$TARGET_ROOTFS_DIR/root/dlcv/lib64" ]; then
+        sudo rm -rf "$TARGET_ROOTFS_DIR/root/dlcv/lib64"
+        sudo ln -s lib "$TARGET_ROOTFS_DIR/root/dlcv/lib64"
+    fi
 
-        # Deploy librknnrt.so
-        if [ -f "$TARGET_ROOTFS_DIR/root/dlcv/bin/librknnrt.so" ]; then
-            sudo cp -f "$TARGET_ROOTFS_DIR/root/dlcv/bin/librknnrt.so" "$TARGET_ROOTFS_DIR/usr/lib/librknnrt.so"
-            sudo chmod 644 "$TARGET_ROOTFS_DIR/usr/lib/librknnrt.so"
-        fi
+    # Fix known DLCV symlinks that 7z turns into copied files
+    # ai_model_accelerator
+    if [ -f "$TARGET_ROOTFS_DIR/root/dlcv/lib/python3.11/site-packages/dlcvpro_deploy/ai_model_accelerator_v.bin" ]; then
+        sudo rm -f "$TARGET_ROOTFS_DIR/root/dlcv/bin/ai_model_accelerator_v.bin"
+        sudo ln -sf /root/dlcv/lib/python3.11/site-packages/dlcvpro_deploy/ai_model_accelerator_v.bin "$TARGET_ROOTFS_DIR/root/dlcv/bin/ai_model_accelerator_v.bin"
+    fi
+    if [ -f "$TARGET_ROOTFS_DIR/root/dlcv/lib/python3.11/site-packages/dlcvpro_deploy/ai_model_accelerator_s.bin" ]; then
+        sudo rm -f "$TARGET_ROOTFS_DIR/root/dlcv/bin/ai_model_accelerator_s.bin"
+        sudo ln -sf /root/dlcv/lib/python3.11/site-packages/dlcvpro_deploy/ai_model_accelerator_s.bin "$TARGET_ROOTFS_DIR/root/dlcv/bin/ai_model_accelerator_s.bin"
+    fi
+    # gi (system package symlink)
+    if [ -d "$TARGET_ROOTFS_DIR/root/dlcv/lib/python3.11/site-packages/gi" ] && [ ! -L "$TARGET_ROOTFS_DIR/root/dlcv/lib/python3.11/site-packages/gi" ]; then
+        sudo rm -rf "$TARGET_ROOTFS_DIR/root/dlcv/lib/python3.11/site-packages/gi"
+        sudo ln -sf /usr/lib/python3/dist-packages/gi "$TARGET_ROOTFS_DIR/root/dlcv/lib/python3.11/site-packages/gi"
+    fi
 
-        # Set executable permissions
-        sudo chmod +x "$TARGET_ROOTFS_DIR/root/dlcv/bin/pressure_test" \
-            "$TARGET_ROOTFS_DIR/root/dlcv/bin/rtop" \
-            "$TARGET_ROOTFS_DIR/root/dlcv/bin/debug" \
-            "$TARGET_ROOTFS_DIR/root/dlcv/bin/dlcv_infer_cpp_qt_demo" \
-            "$TARGET_ROOTFS_DIR/root/dlcv/bin/ai_model_accelerator.bin" 2>/dev/null || true
+    # Deploy librknnrt.so
+    if [ -f "$TARGET_ROOTFS_DIR/root/dlcv/bin/librknnrt.so" ]; then
+        sudo cp -f "$TARGET_ROOTFS_DIR/root/dlcv/bin/librknnrt.so" "$TARGET_ROOTFS_DIR/usr/lib/librknnrt.so"
+        sudo chmod 644 "$TARGET_ROOTFS_DIR/usr/lib/librknnrt.so"
+    fi
 
-        # Configure activate script LD_LIBRARY_PATH
-        ACTIVATE_FILE="$TARGET_ROOTFS_DIR/root/dlcv/bin/activate"
-        if [ -f "$ACTIVATE_FILE" ] && ! grep -qF "DLCV_LDPATH" "$ACTIVATE_FILE" 2>/dev/null; then
-            sudo tee -a "$ACTIVATE_FILE" >/dev/null << 'ACTIVATE_EOF'
+    # Set executable permissions
+    sudo chmod +x "$TARGET_ROOTFS_DIR/root/dlcv/bin/pressure_test"         "$TARGET_ROOTFS_DIR/root/dlcv/bin/rtop"         "$TARGET_ROOTFS_DIR/root/dlcv/bin/debug"         "$TARGET_ROOTFS_DIR/root/dlcv/bin/dlcv_infer_cpp_qt_demo"         "$TARGET_ROOTFS_DIR/root/dlcv/bin/ai_model_accelerator.bin" 2>/dev/null || true
+
+    # Configure activate script LD_LIBRARY_PATH
+    ACTIVATE_FILE="$TARGET_ROOTFS_DIR/root/dlcv/bin/activate"
+    if [ -f "$ACTIVATE_FILE" ] && ! grep -qF "DLCV_LDPATH" "$ACTIVATE_FILE" 2>/dev/null; then
+        sudo tee -a "$ACTIVATE_FILE" >/dev/null << 'ACTIVATE_EOF'
 
 # DLCV local library path
 DLCV_LDPATH="/root/dlcv/bin/lib:/root/dlcv/lib:/root/dlcv/bin"
@@ -234,29 +264,28 @@ else
 fi
 export LD_LIBRARY_PATH
 ACTIVATE_EOF
-        fi
-
-        # Copy Sentinel driver deb to /tmp for chroot install
-        sudo bash -c 'find "$0/root/dlcv/bin" -maxdepth 1 -name "aksusbd_*_arm64.deb" -exec cp {} "$0/tmp/" \; ' "$TARGET_ROOTFS_DIR"
-
-        # Copy SenseShield driver deb to /tmp for chroot install
-        SENSESHIELD_DEB="/share/4-智能相机/0-环境安装/senseshield-lcc-2.7.5.69040-arm64.deb"
-        if [ -f "$SENSESHIELD_DEB" ]; then
-            sudo cp -f "$SENSESHIELD_DEB" "$TARGET_ROOTFS_DIR/tmp/"
-        fi
-
-        # Copy install_kimi.sh to /scripts for chroot install
-        if [ -f "scripts/install_kimi.sh" ]; then
-            sudo mkdir -p "$TARGET_ROOTFS_DIR/scripts"
-            sudo cp -f "scripts/install_kimi.sh" "$TARGET_ROOTFS_DIR/scripts/"
-        fi
-
-        # Fix ownership
-        sudo chown -hR 0:0 $TARGET_ROOTFS_DIR/root/dlcv
-    else
-        echo -e "\033[41;36m DLCV environment extraction failed \033[0m"
-        sudo rm -rf "$TARGET_ROOTFS_DIR/root/dlcv_extract_tmp"
     fi
+
+    # Copy Sentinel driver deb to /tmp for chroot install
+    sudo bash -c 'find "$0/root/dlcv/bin" -maxdepth 1 -name "aksusbd_*_arm64.deb" -exec cp {} "$0/tmp/" \; ' "$TARGET_ROOTFS_DIR"
+
+    # Copy SenseShield driver deb to /tmp for chroot install
+    SENSESHIELD_DEB="/share/4-智能相机/0-环境安装/senseshield-lcc-2.7.5.69040-arm64.deb"
+    if [ -f "$SENSESHIELD_DEB" ]; then
+        sudo cp -f "$SENSESHIELD_DEB" "$TARGET_ROOTFS_DIR/tmp/"
+    fi
+
+    # Copy install_kimi.sh to /scripts for chroot install
+    if [ -f "scripts/install_kimi.sh" ]; then
+        sudo mkdir -p "$TARGET_ROOTFS_DIR/scripts"
+        sudo cp -f "scripts/install_kimi.sh" "$TARGET_ROOTFS_DIR/scripts/"
+    fi
+
+    # Fix ownership
+    sudo chown -hR 0:0 $TARGET_ROOTFS_DIR/root/dlcv
+else
+    echo -e "\033[41;36m DLCV environment extraction failed \033[0m"
+    sudo rm -rf "$TARGET_ROOTFS_DIR/root/dlcv_extract_tmp"
 fi
 
 echo -e "\033[47;36m Change root.....................\033[0m"
@@ -705,6 +734,18 @@ then
     rm /etc/profile.d/qt.sh
 fi
 cd -
+
+# Cleanup documentation to reduce image size
+rm -rf /usr/share/doc/*
+rm -rf /usr/share/info/*
+
+# Cleanup locales: keep only English and Chinese
+if [ -d /usr/lib/locale ]; then
+    find /usr/lib/locale -maxdepth 1 -mindepth 1 -type d ! -name "en_*" ! -name "zh_*" -exec rm -rf {} + 2>/dev/null || true
+fi
+if [ -d /usr/share/locale ]; then
+    find /usr/share/locale -maxdepth 1 -mindepth 1 -type d ! -name "en*" ! -name "zh*" -exec rm -rf {} + 2>/dev/null || true
+fi
 
 rm -rf /var/lib/apt/lists/*
 rm -rf /var/cache/
