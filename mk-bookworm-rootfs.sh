@@ -714,6 +714,36 @@ if [ -f /scripts/install_kimi.sh ]; then
     rm -f /scripts/install_kimi.sh
 fi
 
+echo -e "\033[47;36m ---------- Configure kimi-web service ---------- \033[0m"
+cat > /etc/systemd/system/kimi-web.service << 'KIMI_SERVICE_EOF'
+[Unit]
+Description=Kimi Code Web UI
+After=network.target
+
+[Service]
+Type=simple
+User=root
+Environment=HOME=/root
+WorkingDirectory=/root/Desktop/smartcam_bs
+ExecStart=/root/.local/bin/kimi web --network --no-open --lan-only
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+KIMI_SERVICE_EOF
+
+systemctl daemon-reload
+# 默认不启用，用户按需手动执行 systemctl enable --now kimi-web
+
+# Add alias to zshrc for root and dlcv
+ALIAS_LINE='alias kimi_url="journalctl -u kimi-web | grep token | tail -2"'
+for ZRC in /root/.zshrc /home/dlcv/.zshrc; do
+    if [ -f "$ZRC" ] && ! grep -qF "alias kimi_url=" "$ZRC" 2>/dev/null; then
+        echo "$ALIAS_LINE" >> "$ZRC"
+    fi
+done
+
 #---------------Clean--------------
 if [ -e "/usr/lib/arm-linux-gnueabihf/dri" ] ;
 then
