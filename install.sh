@@ -83,7 +83,16 @@ if [ -n "$DONGLE_DEB" ] && ! dpkg -l aksusbd 2>/dev/null | grep -q "^ii"; then
     echo "[INFO] 加密狗驱动安装完成，服务已启动"
 fi
 
-# 10. 永久激活环境（写入 shell 配置文件）
+# 10. 注册并启动 CamOS 服务
+if command -v systemctl >/dev/null 2>&1; then
+    echo "[INFO] 注册 CamOS 服务..."
+    systemctl daemon-reload
+    systemctl enable camos camos-admin 2>/dev/null || true
+    systemctl start camos camos-admin 2>/dev/null || true
+    echo "[INFO] CamOS 服务已启动"
+fi
+
+# 11. 永久激活环境（写入 shell 配置文件）
 ACTIVATE_LINE="source $ENV_DIR/bin/activate"
 for RC in ~/.bashrc ~/.zshrc; do
     if [ -f "$RC" ]; then
@@ -94,13 +103,13 @@ for RC in ~/.bashrc ~/.zshrc; do
     fi
 done
 
-# 11. 立即激活当前 shell
+# 12. 立即激活当前 shell
 source "$ENV_DIR/bin/activate"
 
 echo "[INFO] 安装完成，环境已激活"
 echo "[INFO] 当前 Python: $(which python)"
 
-# 12. 检查加密狗
+# 13. 检查加密狗
 if lsusb | grep -q "Aladdin\|Sentinel"; then
     echo "[INFO] 检测到 Sentinel 加密狗"
 else
