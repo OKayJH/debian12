@@ -708,6 +708,9 @@ SERVICE_EOF
 
 systemctl enable dlcv-swap.service 2>/dev/null || true
 
+# Enable CamOS services
+systemctl enable camos.service camos-admin.service 2>/dev/null || true
+
 echo -e "\033[47;36m ---------- Install kimi-cli ---------- \033[0m"
 if [ -f /scripts/install_kimi.sh ]; then
     bash /scripts/install_kimi.sh || true
