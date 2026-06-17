@@ -718,29 +718,12 @@ if [ -f /scripts/install_kimi.sh ]; then
 fi
 
 echo -e "\033[47;36m ---------- Configure kimi-web service ---------- \033[0m"
-cat > /etc/systemd/system/kimi-web.service << 'KIMI_SERVICE_EOF'
-[Unit]
-Description=Kimi Code Web UI
-After=network.target
-
-[Service]
-Type=simple
-User=root
-Environment=HOME=/root
-WorkingDirectory=/root/Desktop/smartcam_bs
-ExecStart=/root/.local/bin/kimi web --network --no-open --lan-only
-Restart=always
-RestartSec=3
-
-[Install]
-WantedBy=multi-user.target
-KIMI_SERVICE_EOF
-
+# overlay 已将 /etc/systemd/system/kimi-web.service 复制到目标系统
 systemctl daemon-reload
-# 默认不启用，用户按需手动执行 systemctl enable --now kimi-web
+# 默认不启用 kimi-web，用户按需手动执行 systemctl enable --now kimi-web
 
 # Add alias to zshrc for root and dlcv
-ALIAS_LINE='alias kimi_url="journalctl -u kimi-web | grep token | tail -2"'
+ALIAS_LINE='alias kimi_url="journalctl -u kimi-web | grep ➜ | tail -2"'
 for ZRC in /root/.zshrc /home/dlcv/.zshrc; do
     if [ -f "$ZRC" ] && ! grep -qF "alias kimi_url=" "$ZRC" 2>/dev/null; then
         echo "$ALIAS_LINE" >> "$ZRC"

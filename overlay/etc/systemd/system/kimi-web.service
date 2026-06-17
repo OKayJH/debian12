@@ -1,0 +1,15 @@
+[Unit]
+Description=Kimi Code Web UI
+After=network.target
+
+[Service]
+Type=simple
+User=root
+Environment=HOME=/root
+WorkingDirectory=/root
+ExecStart=/root/.local/bin/kimi web --network --no-open --lan-only
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
