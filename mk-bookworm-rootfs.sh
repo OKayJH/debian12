@@ -558,6 +558,15 @@ fi
 echo -e "\033[47;36m ---------- Install zsh / btop / x11vnc / gnome-terminal -------- \033[0m"
 \${APT_INSTALL} zsh git curl wget btop x11vnc gnome-terminal
 
+echo -e "\033[47;36m ---------- Install GitHub CLI (gh) -------- \033[0m"
+# Debian 官方仓库 gh 版本过旧（如 2.23.0），会导致 gh pr edit 因 GraphQL 弃用警告失败，
+# 因此使用 GitHub 官方 apt 源安装最新版。
+curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
+chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg
+echo "deb [arch=\$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+apt-get update
+\${APT_INSTALL} gh
+
 echo -e "\033[47;36m ---------- Install oh-my-zsh -------- \033[0m"
 # Install oh-my-zsh for dlcv user
 if [ -d /home/dlcv ]; then
