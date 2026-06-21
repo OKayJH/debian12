@@ -293,6 +293,10 @@ ID=$(stat --format %u $TARGET_ROOTFS_DIR)
 
 cat << EOF | sudo chroot $TARGET_ROOTFS_DIR /bin/bash
 
+# Proxy for package downloads during build
+export http_proxy=http://192.168.1.208:7897
+export https_proxy=http://192.168.1.208:7897
+
 # Fixup owners
 if [ "$ID" -ne 0 ]; then
     find / -user $ID -exec chown -h 0:0 {} \;
