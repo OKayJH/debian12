@@ -677,49 +677,23 @@ cat > /etc/default/zramswap << 'ZRAM_EOF'
 ALGO=zstd
 PERCENT=25
 ZRAM_EOF
+
+# Patch zramswap to support built-in zram (CONFIG_ZRAM=y, no zram.ko).
+# When zram is built into the kernel, /dev/zram0 already exists and modprobe fails.
+sed -i 's|modprobe zram || elog "inserting the zram kernel module"|if [ ! -b "\${SWAP_DEV}" ]; then modprobe zram || elog "inserting the zram kernel module"; fi|' /usr/sbin/zramswap
+
 systemctl enable zramswap.service 2>/dev/null || true
 
-# Dynamic swap setup: 25% of RAM, max 2GB
-# Do NOT create fixed-size swapfile in rootfs; use systemd oneshot service
-cat > /usr/local/bin/setup-swap.sh << 'SWAP_EOF'
-#!/bin/bash
-set -e
-TOTAL_MEM_MB=$(free -m | awk '/^Mem:/{print $2}')
-SWAP_SIZE_MB=$(( TOTAL_MEM_MB / 4 ))
-[ "$SWAP_SIZE_MB" -gt 2048 ] && SWAP_SIZE_MB=2048
-
-if [ -f /swapfile ]; then
-    CURRENT_SIZE_MB=$(stat -c %s /swapfile | awk '{print int($1/1024/1024)}')
-    if [ "$CURRENT_SIZE_MB" != "$SWAP_SIZE_MB" ]; then
-        swapoff /swapfile 2>/dev/null || true
-        rm -f /swapfile
-    fi
-fi
-
+# swapfile: 25% of RAM, max 2GB (1GB on RK3576 4GB)
+# Create it directly in rootfs so it is available after first boot.
 if [ ! -f /swapfile ]; then
-    fallocate -l ${SWAP_SIZE_MB}M /swapfile
+    fallocate -l 1G /swapfile
     chmod 600 /swapfile
     mkswap /swapfile
-    swapon /swapfile
 fi
-SWAP_EOF
-chmod +x /usr/local/bin/setup-swap.sh
-
-cat > /etc/systemd/system/dlcv-swap.service << 'SERVICE_EOF'
-[Unit]
-Description=DLCV Dynamic Swap Setup
-After=local-fs.target
-
-[Service]
-Type=oneshot
-ExecStart=/usr/local/bin/setup-swap.sh
-RemainAfterExit=yes
-
-[Install]
-WantedBy=multi-user.target
-SERVICE_EOF
-
-systemctl enable dlcv-swap.service 2>/dev/null || true
+if ! grep -q '^/swapfile' /etc/fstab; then
+    echo '/swapfile none swap sw 0 0' >> /etc/fstab
+fi
 
 # Enable CamOS services
 systemctl enable camos.service camos-admin.service 2>/dev/null || true
