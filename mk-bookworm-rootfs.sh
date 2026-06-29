@@ -389,6 +389,29 @@ if [[ "$TARGET" == "gnome" || "$TARGET" == "xfce" || "$TARGET" == "lxde" ]]; the
     \${APT_INSTALL} /packages/gst-plugins-base1.0/*.deb
     \${APT_INSTALL} /packages/gst-plugins-bad1.0/*.deb
     \${APT_INSTALL} /packages/gst-plugins-good1.0/*.deb
+
+    # RK3576 量产固件预装 MPP / gst-rkmpp 版本过旧，JPEG 编码器不可用，
+    # 在此处从源码编译安装 develop 分支 MPP 与 gst-rockchip 插件进行覆盖。
+    if [[ "$SOC" == "rk3576" ]]; then
+        echo -e "\033[47;36m ------ Upgrade MPP + gst-rockchip for RK3576 JPEG encoder ---------- \033[0m"
+        \${APT_INSTALL} git cmake build-essential pkg-config libdrm-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev meson ninja-build
+        rm -rf /tmp/mpp_build /tmp/gst_rockchip_build
+        git clone --depth 1 --branch develop https://github.com/rockchip-linux/mpp.git /tmp/mpp_build
+        cd /tmp/mpp_build/build/linux/aarch64
+        ./make-Makefiles.bash
+        make -j\$(nproc)
+        make install
+        cp -f /usr/local/lib/librockchip_mpp.so* /usr/lib/aarch64-linux-gnu/ || true
+        cp -f /usr/local/lib/librockchip_vpu.so* /usr/lib/aarch64-linux-gnu/ || true
+        ldconfig
+        git clone --depth 1 https://github.com/englebert/gst-rockchip.git /tmp/gst_rockchip_build
+        cd /tmp/gst_rockchip_build
+        meson setup build --prefix=/usr
+        ninja -C build
+        ninja -C build install
+        ldconfig
+        rm -rf /tmp/mpp_build /tmp/gst_rockchip_build
+    fi
 elif [ "$TARGET" == "lite" ]; then
     echo -e "\033[47;36m ------ Setup Video---------- \033[0m"
     \${APT_INSTALL} /packages/mpp/*
