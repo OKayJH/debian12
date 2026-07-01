@@ -8,3 +8,4 @@ binary/
 *.xz
 *.gz
 build_rootfs.sh
+dlcv_part_src/

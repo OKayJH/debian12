@@ -162,130 +162,42 @@ if [ "$VERSION" == "debug" ]; then
     sudo cp -rpf overlay-debug/* $TARGET_ROOTFS_DIR/
 fi
 
-#---------------DLCV Environment Pre-extract--------------
-DLCV_ENV_TAR="/share/4-智能相机/0-环境安装/dlcv_env.tar.gz"
-DLCV_ENV_7Z="/share/4-智能相机/0-环境安装/dlcv_env.7z"
+#---------------DLCV Environment: separate dlcv partition--------------
+# /root/dlcv 不再烤进 rootfs，改为独立 dlcv ext4 分区（见 device 侧
+# parameter.txt 与 dlcvcam_rk3576_debian12_gnome_defconfig 的 RK_EXTRA_PARTITION_3）。
+# 本段只做两件事：
+#   1) 解压环境到 dlcv 分区源目录 dlcv_part_src/，供 mk-extra-parts.sh 打成 dlcv.img；
+#   2) 从源目录取出仍需进 rootfs 的系统侧文件（librknnrt.so、加密狗驱动 deb）。
+./mk-dlcv-part.sh
+DLCV_PART_SRC="$PWD/dlcv_part_src"
 
-if [ -f "$DLCV_ENV_TAR" ]; then
-    echo -e "\033[47;36m ---------- Pre-extracting DLCV environment (tar.gz) -------- \033[0m"
-    sudo mkdir -p $TARGET_ROOTFS_DIR/root/dlcv
-    sudo rm -rf $TARGET_ROOTFS_DIR/root/dlcv_extract_tmp
-    sudo mkdir -p $TARGET_ROOTFS_DIR/root/dlcv_extract_tmp
-    sudo tar -xzf "$DLCV_ENV_TAR" -C "$TARGET_ROOTFS_DIR/root/dlcv_extract_tmp" 2>/dev/null || true
-    if [ -d "$TARGET_ROOTFS_DIR/root/dlcv_extract_tmp/root/dlcv" ]; then
-        sudo cp -a $TARGET_ROOTFS_DIR/root/dlcv_extract_tmp/root/dlcv/. $TARGET_ROOTFS_DIR/root/dlcv/
-        sudo rm -rf $TARGET_ROOTFS_DIR/root/dlcv_extract_tmp
-    elif [ -d "$TARGET_ROOTFS_DIR/root/dlcv_extract_tmp/dlcv" ]; then
-        sudo cp -a $TARGET_ROOTFS_DIR/root/dlcv_extract_tmp/dlcv/. $TARGET_ROOTFS_DIR/root/dlcv/
-        sudo rm -rf $TARGET_ROOTFS_DIR/root/dlcv_extract_tmp
-    fi
-elif [ -f "$DLCV_ENV_7Z" ] && command -v 7zz >/dev/null 2>&1; then
-    echo -e "\033[47;36m ---------- Pre-extracting DLCV environment (7z) -------- \033[0m"
-    sudo mkdir -p $TARGET_ROOTFS_DIR/root/dlcv
-    sudo rm -rf $TARGET_ROOTFS_DIR/root/dlcv_extract_tmp
-    set +e
-    sudo 7zz x -y "$DLCV_ENV_7Z" -o"$TARGET_ROOTFS_DIR/root/dlcv_extract_tmp" >/dev/null 2>&1
-    EXTRACT_EXIT=$?
-    set -e
-    if [ $EXTRACT_EXIT -ge 2 ]; then
-        echo -e "\033[43;36m WARNING: 7zz exited with code $EXTRACT_EXIT, continuing anyway \033[0m"
-    fi
-    if [ -d "$TARGET_ROOTFS_DIR/root/dlcv_extract_tmp/dlcv" ]; then
-        sudo cp -a $TARGET_ROOTFS_DIR/root/dlcv_extract_tmp/dlcv/. $TARGET_ROOTFS_DIR/root/dlcv/
-        sudo rm -rf $TARGET_ROOTFS_DIR/root/dlcv_extract_tmp
-    fi
-fi
+# /root/dlcv 仅作为挂载点保留为空目录，运行期由 dlcv 分区挂载覆盖
+sudo mkdir -p $TARGET_ROOTFS_DIR/root/dlcv
 
-if [ -d "$TARGET_ROOTFS_DIR/root/dlcv/bin" ]; then
-    # Fix python symlinks (7z may create empty files for dangerous links)
-    PYTHON_BIN="/root/dlcv/.python-runtime/bin/python3.11"
-    if [ -e "$TARGET_ROOTFS_DIR$PYTHON_BIN" ]; then
-        sudo ln -sf "$PYTHON_BIN" "$TARGET_ROOTFS_DIR/root/dlcv/bin/python"
-        sudo ln -sf python "$TARGET_ROOTFS_DIR/root/dlcv/bin/python3"
-        sudo ln -sf python "$TARGET_ROOTFS_DIR/root/dlcv/bin/python3.11"
-    fi
-
-    # Fix absolute path symlinks broken by 7z extraction
-    sudo bash -c '
-        find "$0/root/dlcv" -type l | while read -r LINK; do
-            T=$(readlink "$LINK")
-            if echo "$T" | grep -q "/root/root/dlcv"; then
-                NT=$(echo "$T" | sed "s|/root/root/dlcv|/root/dlcv|")
-                ln -snf "$NT" "$LINK"
-            elif echo "$T" | grep -q "^/root/usr/lib"; then
-                NT=$(echo "$T" | sed "s|^/root/usr/lib|/usr/lib|")
-                [ -e "$0$NT" ] && ln -snf "$NT" "$LINK"
-            fi
-        done
-    ' "$TARGET_ROOTFS_DIR"
-
-    # Fix lib64 duplicate directory (7z may turn symlink into actual directory)
-    if [ -d "$TARGET_ROOTFS_DIR/root/dlcv/lib64" ] && [ ! -L "$TARGET_ROOTFS_DIR/root/dlcv/lib64" ]; then
-        sudo rm -rf "$TARGET_ROOTFS_DIR/root/dlcv/lib64"
-        sudo ln -s lib "$TARGET_ROOTFS_DIR/root/dlcv/lib64"
-    fi
-
-    # Fix known DLCV symlinks that 7z turns into copied files
-    # ai_model_accelerator
-    if [ -f "$TARGET_ROOTFS_DIR/root/dlcv/lib/python3.11/site-packages/dlcvpro_deploy/ai_model_accelerator_v.bin" ]; then
-        sudo rm -f "$TARGET_ROOTFS_DIR/root/dlcv/bin/ai_model_accelerator_v.bin"
-        sudo ln -sf /root/dlcv/lib/python3.11/site-packages/dlcvpro_deploy/ai_model_accelerator_v.bin "$TARGET_ROOTFS_DIR/root/dlcv/bin/ai_model_accelerator_v.bin"
-    fi
-    if [ -f "$TARGET_ROOTFS_DIR/root/dlcv/lib/python3.11/site-packages/dlcvpro_deploy/ai_model_accelerator_s.bin" ]; then
-        sudo rm -f "$TARGET_ROOTFS_DIR/root/dlcv/bin/ai_model_accelerator_s.bin"
-        sudo ln -sf /root/dlcv/lib/python3.11/site-packages/dlcvpro_deploy/ai_model_accelerator_s.bin "$TARGET_ROOTFS_DIR/root/dlcv/bin/ai_model_accelerator_s.bin"
-    fi
-    # gi (system package symlink)
-    if [ -d "$TARGET_ROOTFS_DIR/root/dlcv/lib/python3.11/site-packages/gi" ] && [ ! -L "$TARGET_ROOTFS_DIR/root/dlcv/lib/python3.11/site-packages/gi" ]; then
-        sudo rm -rf "$TARGET_ROOTFS_DIR/root/dlcv/lib/python3.11/site-packages/gi"
-        sudo ln -sf /usr/lib/python3/dist-packages/gi "$TARGET_ROOTFS_DIR/root/dlcv/lib/python3.11/site-packages/gi"
-    fi
-
-    # Deploy librknnrt.so
-    if [ -f "$TARGET_ROOTFS_DIR/root/dlcv/bin/librknnrt.so" ]; then
-        sudo cp -f "$TARGET_ROOTFS_DIR/root/dlcv/bin/librknnrt.so" "$TARGET_ROOTFS_DIR/usr/lib/librknnrt.so"
+if [ -d "$DLCV_PART_SRC/bin" ]; then
+    # Deploy librknnrt.so to rootfs /usr/lib (system side, env-derived but stable)
+    if [ -f "$DLCV_PART_SRC/bin/librknnrt.so" ]; then
+        sudo cp -f "$DLCV_PART_SRC/bin/librknnrt.so" "$TARGET_ROOTFS_DIR/usr/lib/librknnrt.so"
         sudo chmod 644 "$TARGET_ROOTFS_DIR/usr/lib/librknnrt.so"
     fi
 
-    # Set executable permissions
-    sudo chmod +x "$TARGET_ROOTFS_DIR/root/dlcv/bin/pressure_test"         "$TARGET_ROOTFS_DIR/root/dlcv/bin/rtop"         "$TARGET_ROOTFS_DIR/root/dlcv/bin/debug"         "$TARGET_ROOTFS_DIR/root/dlcv/bin/dlcv_infer_cpp_qt_demo"         "$TARGET_ROOTFS_DIR/root/dlcv/bin/ai_model_accelerator.bin" 2>/dev/null || true
-
-    # Configure activate script LD_LIBRARY_PATH
-    ACTIVATE_FILE="$TARGET_ROOTFS_DIR/root/dlcv/bin/activate"
-    if [ -f "$ACTIVATE_FILE" ] && ! grep -qF "DLCV_LDPATH" "$ACTIVATE_FILE" 2>/dev/null; then
-        sudo tee -a "$ACTIVATE_FILE" >/dev/null << 'ACTIVATE_EOF'
-
-# DLCV local library path
-DLCV_LDPATH="/root/dlcv/bin/lib:/root/dlcv/lib:/root/dlcv/bin"
-if [ -z "${LD_LIBRARY_PATH-}" ] ; then
-    LD_LIBRARY_PATH="$DLCV_LDPATH"
+    # Copy Sentinel dongle driver deb to /tmp for chroot install
+    sudo bash -c 'find "$0/bin" -maxdepth 1 -name "aksusbd_*_arm64.deb" -exec cp {} "$1/tmp/" \;' "$DLCV_PART_SRC" "$TARGET_ROOTFS_DIR"
 else
-    LD_LIBRARY_PATH="$DLCV_LDPATH:$LD_LIBRARY_PATH"
+    echo -e "\033[41;36m DLCV environment extraction failed: $DLCV_PART_SRC/bin missing \033[0m"
+    exit 1
 fi
-export LD_LIBRARY_PATH
-ACTIVATE_EOF
-    fi
 
-    # Copy Sentinel driver deb to /tmp for chroot install
-    sudo bash -c 'find "$0/root/dlcv/bin" -maxdepth 1 -name "aksusbd_*_arm64.deb" -exec cp {} "$0/tmp/" \; ' "$TARGET_ROOTFS_DIR"
+# Copy SenseShield dongle driver deb to /tmp for chroot install (from /share, env-independent)
+SENSESHIELD_DEB="/share/4-智能相机/0-环境安装/senseshield-lcc-2.7.5.69040-arm64.deb"
+if [ -f "$SENSESHIELD_DEB" ]; then
+    sudo cp -f "$SENSESHIELD_DEB" "$TARGET_ROOTFS_DIR/tmp/"
+fi
 
-    # Copy SenseShield driver deb to /tmp for chroot install
-    SENSESHIELD_DEB="/share/4-智能相机/0-环境安装/senseshield-lcc-2.7.5.69040-arm64.deb"
-    if [ -f "$SENSESHIELD_DEB" ]; then
-        sudo cp -f "$SENSESHIELD_DEB" "$TARGET_ROOTFS_DIR/tmp/"
-    fi
-
-    # Copy install_kimi.sh to /scripts for chroot install
-    if [ -f "scripts/install_kimi.sh" ]; then
-        sudo mkdir -p "$TARGET_ROOTFS_DIR/scripts"
-        sudo cp -f "scripts/install_kimi.sh" "$TARGET_ROOTFS_DIR/scripts/"
-    fi
-
-    # Fix ownership
-    sudo chown -hR 0:0 $TARGET_ROOTFS_DIR/root/dlcv
-else
-    echo -e "\033[41;36m DLCV environment extraction failed \033[0m"
-    sudo rm -rf "$TARGET_ROOTFS_DIR/root/dlcv_extract_tmp"
+# Copy install_kimi.sh to /scripts for chroot install
+if [ -f "scripts/install_kimi.sh" ]; then
+    sudo mkdir -p "$TARGET_ROOTFS_DIR/scripts"
+    sudo cp -f "scripts/install_kimi.sh" "$TARGET_ROOTFS_DIR/scripts/"
 fi
 
 echo -e "\033[47;36m Change root.....................\033[0m"

@@ -10,3 +10,4 @@ devtmpfs            /dev	        devtmpfs	defaults	0 0
 devpts              /dev/pts	    devpts	    mode=0620,ptmxmode=0666,gid=5	0 0
 debugfs			/sys/kernel/debug	debugfs		defaults		0	0
 pstore			/sys/fs/pstore		pstore		defaults		0	0
+PARTLABEL=dlcv		/root/dlcv		ext4		defaults		0	2
