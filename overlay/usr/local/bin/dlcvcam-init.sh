@@ -193,3 +193,101 @@ ACTION=="add", SUBSYSTEM=="net", KERNEL=="eth*|enp*|ens*|usb*", RUN+="$UDEV_HELP
 EOF
 
 echo "dlcvcam-init: udev rule generated at ${UDEV_RULE}"
+
+# --- 6. Configure IPv4 link-local fallback for ethernet interfaces ---
+# When the camera is directly connected to a host without a DHCP server,
+# NetworkManager must fall back to an IPv4 link-local address (169.254.x.x)
+# so that camos GVCP discovery can still respond and the host can find the
+# device. Without this fallback the interface ends up with no IPv4 address
+# and discovery fails.
+#
+# We use a "DHCP + static link-local" dual-stack setup:
+# - address1 is a deterministic 169.254.x.x address derived from the MAC,
+#   so the interface has an IPv4 address immediately after the cable is
+#   plugged in, without waiting for DHCP.
+# - DHCP is still active; if a DHCP server is present the interface will
+#   also receive a routable address within dhcp-timeout seconds.
+# - camos (smartcam_bs PR #119) prefers the non-link-local address when
+#   both exist, so the host gets the usable DHCP address in normal networks.
+generate_link_local_ip() {
+    local mac="$1"
+    python3 -c "
+import sys, hashlib
+mac = sys.argv[1]
+mac_bytes = bytes.fromhex(mac.replace(':', ''))
+h = hashlib.md5(mac_bytes).digest()
+value = (h[0] << 8) | h[1]
+if value in (0, 0xFFFF):
+    value = 0x1234
+print(f'169.254.{value >> 8}.{value & 0xFF}')
+" "$mac" 2>/dev/null
+}
+
+configure_nm_lla_fallback() {
+    local iface="$1"
+    local conn_file="/etc/NetworkManager/system-connections/${iface}.nmconnection"
+
+    mkdir -p "$(dirname "$conn_file")"
+
+    local uuid
+    uuid=$(python3 -c "import uuid; print(uuid.uuid4())" 2>/dev/null || echo "00000000-0000-0000-0000-000000000000")
+
+    local mac lla
+    mac=$(cat "/sys/class/net/${iface}/address" 2>/dev/null || echo "00:00:00:00:00:00")
+    lla=$(generate_link_local_ip "$mac")
+
+    cat > "$conn_file" <<EOF
+[connection]
+id=${iface}
+uuid=${uuid}
+type=ethernet
+interface-name=${iface}
+autoconnect=true
+autoconnect-priority=100
+
+[ethernet]
+
+[ipv4]
+method=auto
+may-fail=true
+dhcp-timeout=10
+address1=${lla}/16
+
+[ipv6]
+addr-gen-mode=default
+method=auto
+
+[proxy]
+EOF
+
+    chmod 600 "$conn_file"
+    echo "dlcvcam-init: Configured IPv4 link-local fallback for ${iface}: ${lla}/16 (DHCP still active)"
+}
+
+for iface in $IFACES; do
+    IFACE_PATH="/sys/class/net/${iface}"
+    if [ ! -d "$IFACE_PATH" ]; then
+        continue
+    fi
+    configure_nm_lla_fallback "$iface"
+done
+
+# If NetworkManager is already running, reload so the new/updated connections
+# take effect immediately; otherwise they will be picked up on next start.
+if systemctl is-active --quiet NetworkManager 2>/dev/null; then
+    nmcli connection reload 2>/dev/null || true
+fi
+
+# --- Enable LLA keepalive watchdog (direct-connect discoverability) ---
+# NM's may-fail does not reliably retain the static link-local address in its
+# DHCP fail-loop on direct-connect (no DHCP server), leaving the device without
+# any IPv4 address and undiscoverable most of the time. The camos-lla-keepalive
+# service re-adds the deterministic LLA at the kernel level every second,
+# independent of NM/DHCP, so GVCP discovery always responds.
+if [ -f /etc/systemd/system/camos-lla-keepalive.service ] && \
+   [ -f /usr/local/bin/camos-lla-keepalive.sh ]; then
+    systemctl enable camos-lla-keepalive.service 2>/dev/null || true
+    if ! systemctl is-active --quiet camos-lla-keepalive.service 2>/dev/null; then
+        systemctl start camos-lla-keepalive.service 2>/dev/null || true
+    fi
+fi
