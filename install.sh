@@ -36,7 +36,7 @@ chmod 644 /usr/lib/librknnrt.so
 ldconfig
 
 # 4. 设置可执行权限
-chmod +x "$ENV_DIR/bin/pressure_test" "$ENV_DIR/bin/rtop" "$ENV_DIR/bin/debug" "$ENV_DIR/bin/dlcv_infer_cpp_qt_demo" "$ENV_DIR/bin/ai_model_accelerator.bin" 2>/dev/null || true
+chmod +x "$ENV_DIR/bin/pressure_test" "$ENV_DIR/bin/rtop" "$ENV_DIR/bin/debug" "$ENV_DIR/bin/dlcv_infer_cpp_qt_demo" 2>/dev/null || true
 
 # 5. 修复 python 软链接（7z 解压会忽略危险链接）
 if [ ! -e "$ENV_DIR/bin/python" ]; then
@@ -45,16 +45,22 @@ if [ ! -e "$ENV_DIR/bin/python" ]; then
     ln -sf python "$ENV_DIR/bin/python3.11"
 fi
 
-# 6. 修复 ai_model_accelerator.bin 软链接
-ACCEL_BIN="$ENV_DIR/bin/ai_model_accelerator.bin"
-if [ -L "$ACCEL_BIN" ]; then
-    TARGET=$(readlink "$ACCEL_BIN")
-    if echo "$TARGET" | grep -q "/root/root/dlcv"; then
-        NEW_TARGET=$(echo "$TARGET" | sed 's|/root/root/dlcv|/root/dlcv|')
-        ln -snf "$NEW_TARGET" "$ACCEL_BIN"
-        echo "[INFO] 修复 ai_model_accelerator.bin 软链接"
+# 6. 加速器始终链接到已安装的加密包，避免环境包中的实体文件长期停留在旧版本
+ACCEL_PACKAGE_DIR="$ENV_DIR/lib/python3.11/site-packages/dlcvpro_deploy"
+for ACCEL_NAME in ai_model_accelerator_s.bin ai_model_accelerator_v.bin; do
+    ACCEL_SOURCE="$ACCEL_PACKAGE_DIR/$ACCEL_NAME"
+    ACCEL_LINK="$ENV_DIR/bin/$ACCEL_NAME"
+    if [ ! -f "$ACCEL_SOURCE" ] || [ ! -x "$ACCEL_SOURCE" ]; then
+        echo "[ERROR] 已加密加速器不存在或不可执行: $ACCEL_SOURCE"
+        exit 1
     fi
-fi
+    ln -sfn "$ACCEL_SOURCE" "$ACCEL_LINK"
+    if [ ! -L "$ACCEL_LINK" ] || [ "$(readlink -f "$ACCEL_LINK")" != "$ACCEL_SOURCE" ]; then
+        echo "[ERROR] 加速器软链接校验失败: $ACCEL_LINK"
+        exit 1
+    fi
+    echo "[INFO] 已更新加速器软链接: $ACCEL_LINK -> $ACCEL_SOURCE"
+done
 
 # 8. 配置 activate 脚本中的 LD_LIBRARY_PATH（供 debug / Qt demo 找到 libdlcv_infer_cpp_dll.so 等）
 ACTIVATE_FILE="$ENV_DIR/bin/activate"
