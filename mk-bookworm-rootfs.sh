@@ -350,6 +350,9 @@ if [[ "$TARGET" == "gnome" || "$TARGET" == "xfce" || "$TARGET" == "lxde" ]]; the
 
     echo -e "\033[47;36m ------ update chromium ----- \033[0m"
     \${APT_INSTALL} /packages/chromium/*.deb
+
+    echo -e "\033[47;36m ------ install firefox-esr ----- \033[0m"
+    \${APT_INSTALL} firefox-esr
 fi
 
 echo -e "\033[47;36m ------- Install libdrm ------ \033[0m"
@@ -398,7 +401,7 @@ fi
 
 if [[ "$TARGET" == "gnome" || "$TARGET" == "xfce" || "$TARGET" == "lxde" ]]; then
     echo -e "\033[47;36m -------     ibus    -------- \033[0m"
-    \${APT_INSTALL} ibus ibus-libpinyin
+    \${APT_INSTALL} ibus ibus-libpinyin ibus-gtk3 ibus-gtk4 im-config
 
     # echo -e "\033[47;36m -------   pipewire  -------- \033[0m"
     # \${APT_INSTALL} pipewire pipewire-pulse pipewire-alsa libspa-0.2-bluetooth

@@ -9,3 +9,12 @@ custom-keybindings=['/org/gnome/settings-daemon/plugins/media-keys/custom-keybin
 name='Open Terminal'
 command='gnome-terminal'
 binding='<Control><Shift>t'
+
+[org/freedesktop/ibus/general]
+engines-order=['libpinyin', 'xkb:us::eng']
+preload-engines=['libpinyin', 'xkb:us::eng']
+show-icon-on-systray=true
+use-global-engine=true
+
+[org/gnome/desktop/input-sources]
+sources=[('ibus', 'libpinyin'), ('xkb', 'us')]
