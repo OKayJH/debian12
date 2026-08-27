@@ -1,7 +1,7 @@
 #!/bin/bash -e
 set -o pipefail
 
-# 把 dlcv_env.tar.gz 解压到 dlcv 独立分区的源目录 dlcv_part_src/。
+# 把 dlcv_env_2026.8.26.tar.gz 解压到 dlcv 独立分区的源目录 dlcv_part_src/。
 # 该目录被 device 侧 RK_EXTRA_PARTITION_3_SRC 引用，由 mk-extra-parts.sh 打成 dlcv.img。
 #
 # 用法：
@@ -10,7 +10,7 @@ set -o pipefail
 #     无需重建 rootfs。
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-DLCV_ENV_TAR="${DLCV_ENV_TAR:-/share/4-智能相机/0-环境安装/dlcv_env.tar.gz}"
+DLCV_ENV_TAR="${DLCV_ENV_TAR:-/share/4-智能相机/0-环境安装/dlcv_env_2026.08.26_195502.tar.gz}"
 DLCV_PART_SRC="$HERE/dlcv_part_src"
 
 if [ ! -f "$DLCV_ENV_TAR" ]; then

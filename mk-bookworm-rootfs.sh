@@ -637,8 +637,8 @@ if ! grep -q '^/swapfile' /etc/fstab; then
     echo '/swapfile none swap sw 0 0' >> /etc/fstab
 fi
 
-# Enable CamOS services
-systemctl enable camos.service camos-admin.service 2>/dev/null || true
+# Enable CamOS and boot confirmation services
+systemctl enable camos.service camos-admin.service dlcvcam-boot-try-confirm.service
 
 echo -e "\033[47;36m ---------- Install kimi-cli ---------- \033[0m"
 if [ -f /scripts/install_kimi.sh ]; then
