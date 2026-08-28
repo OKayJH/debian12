@@ -8,7 +8,10 @@ User=root
 ExecStart=/root/dlcv/lib/python3.11/site-packages/camos/camos --host 0.0.0.0 --port 8000 80
 Restart=on-failure
 RestartSec=5
+TimeoutStopSec=10s
 Environment=PYTHONUNBUFFERED=1
+Environment="PYTHONIOENCODING=utf-8"
+Environment="LANG=zh_CN.UTF-8"
 
 [Install]
 WantedBy=multi-user.target

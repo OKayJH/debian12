@@ -7,15 +7,15 @@
 # SSH-only manual ops. No systemd. No auto-upgrade hooks.
 #
 # Usage (on board, as root):
-#   dlcvcam-sync-boot-to-recovery.sh status
-#   DLCVCAM_I_UNDERSTAND=1 dlcvcam-sync-boot-to-recovery.sh sync-from-boot
-#   DLCVCAM_I_UNDERSTAND=1 dlcvcam-sync-boot-to-recovery.sh restore-boot-from-recovery
+#   dlcvcam-recovery status
+#   dlcvcam-recovery update -y       # boot → recovery（更新金镜像）
+#   dlcvcam-recovery rescue -y       # recovery → boot（救援）
 #
 # Safety:
 #   - root only
-#   - sync-from-boot requires boot FIT magic d00dfeed (refuse bad boot → recovery)
-#   - restore requires recovery FIT magic
-#   - destructive ops need DLCVCAM_I_UNDERSTAND=1 or interactive hostname confirm
+#   - update requires boot FIT magic d00dfeed (refuse bad boot → recovery)
+#   - rescue requires recovery FIT magic；为空或非 FIT 拒绝并提示
+#   - destructive ops need -y or interactive hostname confirm
 #   - logs to syslog + /userdata/camos_kernel_backups/recovery-ops.log
 #
 set -euo pipefail
@@ -25,9 +25,9 @@ RECOVERY_PART="${DLCVCAM_RECOVERY_PART:-/dev/disk/by-partlabel/recovery}"
 BACKUP_DIR="${DLCVCAM_BACKUP_DIR:-/userdata/camos_kernel_backups}"
 LOG_FILE="${DLCVCAM_RECOVERY_LOG:-${BACKUP_DIR}/recovery-ops.log}"
 FIT_MAGIC_HEX="d00dfeed"
-DD_BS="${DLCVCAM_DD_BS:-4M}"
 
 PROG="$(basename "$0")"
+YES=0
 
 log() {
 	local msg="$*"
@@ -55,7 +55,12 @@ need_cmd() {
 }
 
 part_size() {
-	blockdev --getsize64 "$1"
+	if [[ -b "$1" ]]; then
+		blockdev --getsize64 "$1"
+	else
+		# 普通文件（测试/手工镜像）用字节长度
+		python3 -c 'import os, sys; print(os.path.getsize(sys.argv[1]))' "$1"
+	fi
 }
 
 read_magic_hex() {
@@ -74,6 +79,17 @@ is_fit_magic() {
 	local magic
 	magic="$(read_magic_hex "$dev")"
 	[[ "$magic" == "$FIT_MAGIC_HEX" ]]
+}
+
+require_recovery_fit() {
+	local part="$1"
+	local magic
+	[[ -e "$part" ]] || die "recovery 分区不存在: $part，拒绝执行 rescue"
+	magic="$(read_magic_hex "$part")"
+	if [[ -z "$magic" ]]; then
+		die "recovery 为空，没有可用内核镜像，拒绝执行 rescue。请先用已知好的 boot 执行 update，或手工写入 recovery。"
+	fi
+	[[ "$magic" == "$FIT_MAGIC_HEX" ]] || die "recovery 不是合法 FIT 镜像（magic=${magic}），拒绝写回 boot。请先用已知好的 boot 执行 update，或手工写入 recovery。"
 }
 
 sha256_bytes() {
@@ -101,12 +117,12 @@ PY
 
 confirm_destructive() {
 	local action="$1"
-	if [[ "${DLCVCAM_I_UNDERSTAND:-}" == "1" ]]; then
-		log "confirm: DLCVCAM_I_UNDERSTAND=1 for ${action}"
+	if [[ "$YES" == "1" ]]; then
+		log "confirm: -y for ${action}"
 		return 0
 	fi
 	if [[ ! -t 0 ]]; then
-		die "非交互环境请设置 DLCVCAM_I_UNDERSTAND=1 后再执行: ${action}"
+		die "非交互环境请加 -y 后再执行: ${action}"
 	fi
 	local host expect
 	host="$(hostname 2>/dev/null || cat /etc/hostname 2>/dev/null || echo unknown)"
@@ -119,23 +135,27 @@ confirm_destructive() {
 
 usage() {
 	cat <<EOF
-用法: ${PROG} <command>
+用法: ${PROG} <command> [-y]
 
-  status                      查看 boot/recovery 分区与当前内核
-  sync-from-boot              将当前 boot 写入 recovery（更新出厂/金镜像）
-  restore-boot-from-recovery  将 recovery 写回 boot（救援）
+  status     查看 boot/recovery 分区与当前内核
+  update     将当前 boot 写入 recovery（更新金镜像）
+  rescue     将 recovery 写回 boot（救援）
+
+破坏性操作确认:
+  交互终端输入主机名，或加 -y
 
 环境变量:
-  DLCVCAM_I_UNDERSTAND=1   跳过交互确认（脚本/无人值守）
   DLCVCAM_BOOT_PART        默认 ${BOOT_PART}
   DLCVCAM_RECOVERY_PART    默认 ${RECOVERY_PART}
   DLCVCAM_BACKUP_DIR       默认 ${BACKUP_DIR}
-  DLCVCAM_SKIP_RECOVERY_BAK=1  sync 前不备份旧 recovery 到 userdata
+  DLCVCAM_SKIP_RECOVERY_BAK=1  update 前不备份旧 recovery 到 userdata
 
 注意:
-  - Admin/日常升级只应写 boot，不要自动跑 sync-from-boot
+  - Admin/日常升级只应写 boot，不要自动跑 update
   - 仅在确认当前 boot 稳定健康后再更新 recovery
-  - boot 非 FIT 时拒绝 sync-from-boot，防止双杀
+  - boot 非 FIT 时拒绝 update，防止双杀
+  - recovery 为空或非 FIT 时拒绝 rescue，并提示用户
+  - update/rescue 写入后会清零目标分区尾部，避免旧 FIT 残留构建号
 EOF
 }
 
@@ -211,11 +231,13 @@ dd_copy() {
 	local ifdev="$1"
 	local ofdev="$2"
 	local nbytes="$3"
-	# Copy exactly nbytes using dd with fullblock; pad not required when nbytes == boot size
-	# Use bytes count via python for exactness when not multiple of bs — fallback dd+count.
-	python3 - "$ifdev" "$ofdev" "$nbytes" <<'PY'
+	local ofsize="${4:-}"
+	# Copy exactly nbytes; if ofsize is given and larger, zero the remainder so a
+	# shorter FIT cannot leave leftover uts banners in the destination partition.
+	python3 - "$ifdev" "$ofdev" "$nbytes" "$ofsize" <<'PY'
 import os, sys
 src, dst, n = sys.argv[1], sys.argv[2], int(sys.argv[3])
+dst_size = int(sys.argv[4]) if sys.argv[4] else n
 bs = 4 * 1024 * 1024
 left = n
 with open(src, "rb") as fi, open(dst, "r+b", buffering=0) as fo:
@@ -225,18 +247,23 @@ with open(src, "rb") as fi, open(dst, "r+b", buffering=0) as fo:
             raise SystemExit(f"short read from {src}, left={left}")
         fo.write(chunk)
         left -= len(chunk)
+    pad = dst_size - n
+    zeros = b"\x00" * bs
+    while pad > 0:
+        chunk = zeros if pad >= bs else zeros[:pad]
+        fo.write(chunk)
+        pad -= len(chunk)
     fo.flush()
     os.fsync(fo.fileno())
-print(f"wrote {n} bytes {src} -> {dst}")
+print(f"wrote {n} bytes {src} -> {dst}" + (f" (zeroed tail to {dst_size})" if dst_size > n else ""))
 PY
 	sync
 }
 
-cmd_sync_from_boot() {
+cmd_update() {
 	need_root
 	need_cmd blockdev
 	need_cmd python3
-	need_cmd dd
 
 	[[ -b "$BOOT_PART" || -e "$BOOT_PART" ]] || die "boot 分区不存在: $BOOT_PART"
 	[[ -b "$RECOVERY_PART" || -e "$RECOVERY_PART" ]] || die "recovery 分区不存在: $RECOVERY_PART"
@@ -248,7 +275,7 @@ cmd_sync_from_boot() {
 	rec_sz="$(part_size "$RECOVERY_PART")"
 	[[ "$boot_sz" -le "$rec_sz" ]] || die "boot 分区 (${boot_sz}) 大于 recovery (${rec_sz})，无法整分区同步"
 
-	confirm_destructive "sync-from-boot: ${BOOT_PART} -> ${RECOVERY_PART} (${boot_sz} bytes)"
+	confirm_destructive "update: ${BOOT_PART} -> ${RECOVERY_PART} (${boot_sz} bytes)"
 
 	mkdir -p "$BACKUP_DIR"
 
@@ -279,9 +306,9 @@ PY
 
 	local sha_src sha_dst
 	sha_src="$(sha256_bytes "$BOOT_PART" "$boot_sz")"
-	log "sync start sha256(boot[:${boot_sz}])=${sha_src}"
+	log "update start sha256(boot[:${boot_sz}])=${sha_src}"
 
-	dd_copy "$BOOT_PART" "$RECOVERY_PART" "$boot_sz"
+	dd_copy "$BOOT_PART" "$RECOVERY_PART" "$boot_sz" "$rec_sz"
 
 	# drop caches best-effort
 	echo 3 >/proc/sys/vm/drop_caches 2>/dev/null || true
@@ -289,13 +316,13 @@ PY
 	[[ "$sha_dst" == "$sha_src" ]] || die "回读校验失败: recovery=${sha_dst} boot=${sha_src}"
 	is_fit_magic "$RECOVERY_PART" || die "写入后 recovery 非 FIT magic"
 
-	log "sync-from-boot OK sha256=${sha_dst}"
+	log "update OK sha256=${sha_dst}"
 	echo "OK: recovery 已更新为当前 boot 内容"
 	echo "sha256(${boot_sz} bytes)=${sha_dst}"
 	echo "uname: $(uname -a)"
 }
 
-cmd_restore_boot_from_recovery() {
+cmd_rescue() {
 	need_root
 	need_cmd blockdev
 	need_cmd python3
@@ -303,7 +330,7 @@ cmd_restore_boot_from_recovery() {
 	[[ -b "$BOOT_PART" || -e "$BOOT_PART" ]] || die "boot 分区不存在: $BOOT_PART"
 	[[ -b "$RECOVERY_PART" || -e "$RECOVERY_PART" ]] || die "recovery 分区不存在: $RECOVERY_PART"
 
-	is_fit_magic "$RECOVERY_PART" || die "recovery 不是 FIT magic，拒绝写回 boot"
+	require_recovery_fit "$RECOVERY_PART"
 
 	local boot_sz rec_sz copy_sz
 	boot_sz="$(part_size "$BOOT_PART")"
@@ -314,7 +341,7 @@ cmd_restore_boot_from_recovery() {
 		die "recovery (${rec_sz}) 小于 boot (${boot_sz})，无法安全写回"
 	fi
 
-	confirm_destructive "restore-boot-from-recovery: ${RECOVERY_PART} -> ${BOOT_PART} (${copy_sz} bytes)"
+	confirm_destructive "rescue: ${RECOVERY_PART} -> ${BOOT_PART} (${copy_sz} bytes)"
 
 	mkdir -p "$BACKUP_DIR"
 	local bak="${BACKUP_DIR}/boot-before-restore-$(date +%Y%m%d-%H%M%S).img"
@@ -337,31 +364,48 @@ PY
 
 	local sha_src sha_dst
 	sha_src="$(sha256_bytes "$RECOVERY_PART" "$copy_sz")"
-	log "restore start sha256(recovery[:${copy_sz}])=${sha_src}"
+	log "rescue start sha256(recovery[:${copy_sz}])=${sha_src}"
 
-	dd_copy "$RECOVERY_PART" "$BOOT_PART" "$copy_sz"
+	dd_copy "$RECOVERY_PART" "$BOOT_PART" "$copy_sz" "$boot_sz"
 
 	echo 3 >/proc/sys/vm/drop_caches 2>/dev/null || true
 	sha_dst="$(sha256_bytes "$BOOT_PART" "$copy_sz")"
 	[[ "$sha_dst" == "$sha_src" ]] || die "回读校验失败: boot=${sha_dst} recovery=${sha_src}"
 	is_fit_magic "$BOOT_PART" || die "写回后 boot 非 FIT magic"
 
-	log "restore-boot-from-recovery OK sha256=${sha_dst}"
+	log "rescue OK sha256=${sha_dst}"
 	echo "OK: boot 已从 recovery 恢复"
 	echo "sha256(${copy_sz} bytes)=${sha_dst}"
 	echo "请执行: reboot"
 }
 
 main() {
-	local cmd="${1:-}"
+	local cmd=""
+	local arg
+	for arg in "$@"; do
+		case "$arg" in
+		-y)
+			YES=1
+			;;
+		-h | --help | help)
+			usage
+			exit 0
+			;;
+		-*)
+			die "未知选项: $arg"
+			;;
+		*)
+			if [[ -n "$cmd" ]]; then
+				die "多余参数: $arg"
+			fi
+			cmd="$arg"
+			;;
+		esac
+	done
 	case "$cmd" in
 	status) cmd_status ;;
-	sync-from-boot) cmd_sync_from_boot ;;
-	restore-boot-from-recovery) cmd_restore_boot_from_recovery ;;
-	-h | --help | help)
-		usage
-		exit 0
-		;;
+	update) cmd_update ;;
+	rescue) cmd_rescue ;;
 	"")
 		usage
 		exit 1
