@@ -31,9 +31,10 @@ targets = [
         "dist": "camos",
         "package": "camos",
         "binary": "camos",
+        "frontend": "static/dist/index.html",
         "required": {
             "camos",
-            "static/app.asar",
+            "static/dist/index.html",
             "runtime_settings.json",
             "runtime_settings_dlcvcam.json",
         },
@@ -43,6 +44,7 @@ targets = [
         "dist": "camos_admin",
         "package": "camos_admin",
         "binary": "camos-admin",
+        "frontend": "static/app.asar",
         "required": {
             "camos-admin",
             "static/app.asar",
@@ -97,9 +99,10 @@ for target in targets:
         )
         if missing:
             raise SystemExit(f"{wheel.name} missing assets: {', '.join(missing)}")
-        asar_info = zf.getinfo(f"{package_name}/static/app.asar")
-        if asar_info.file_size == 0:
-            raise SystemExit(f"{wheel.name} has empty app.asar")
+        frontend = target["frontend"]
+        frontend_info = zf.getinfo(f"{package_name}/{frontend}")
+        if frontend_info.file_size == 0:
+            raise SystemExit(f"{wheel.name} has empty {frontend}")
 
         shutil.rmtree(site / package_name, ignore_errors=True)
         for stale in site.glob(f"{dist}-*.dist-info"):
