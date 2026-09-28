@@ -227,6 +227,13 @@ configure_nm_lla_fallback() {
     local iface="$1"
     local conn_file="/etc/NetworkManager/system-connections/${iface}.nmconnection"
 
+    # Defaults are for first boot only. NetworkManager owns saved IP settings
+    # and the connection UUID; replacing them here undoes user changes on reboot.
+    if [ -f "$conn_file" ]; then
+        echo "dlcvcam-init: Keeping existing network configuration for ${iface}"
+        return 0
+    fi
+
     mkdir -p "$(dirname "$conn_file")"
 
     local uuid
