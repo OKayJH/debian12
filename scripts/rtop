@@ -7,8 +7,17 @@ rtop - RK3576 System Monitor
 import argparse
 import os
 import re
+import select
+import shutil
+import signal
+import subprocess
 import sys
+import termios
 import time
+import unicodedata
+from pathlib import Path
+
+__version__ = '2026.11.4.0'
 
 # ------------------------------------------------------------------ args
 parser = argparse.ArgumentParser(
@@ -24,10 +33,12 @@ parser.add_argument("-i", "--interval", type=float, default=1.0,
                     help="refresh interval in seconds (default: 1.0)")
 parser.add_argument("-o", "--once", action="store_true",
                     help="print a single frame and exit")
-args = parser.parse_args()
+parser.add_argument("-V", "--version", action="version", version=f"rtop {__version__}",
+                    help="显示版本号并退出")
+parser.add_argument("--gpu-worker", action="store_true", help=argparse.SUPPRESS)
 
 # ------------------------------------------------------------------ config
-INTERVAL = max(0.1, args.interval)
+INTERVAL = 1.0
 CARD_W = 36
 BAR_W = 14
 
@@ -101,10 +112,11 @@ def hbar(percent, width=BAR_W, color_fn=None):
     bar = "█" * full
     if rem:
         bar += BLOCKS[rem]
-    bar += "░" * empty
     if color_fn:
         c = color_fn(percent)
-        bar = fg(*c) + bar + RESET
+        bar = fg(*c) + bar + RESET + fg(90, 100, 115) + "─" * empty + RESET
+    else:
+        bar += "─" * empty
     return bar
 
 # ------------------------------------------------------------------ utils
@@ -155,7 +167,8 @@ def parse_rknpu_load(path):
 ANSI_RE = re.compile(r'\x1b\[[0-9;]*m')
 
 def vlen(s):
-    return len(ANSI_RE.sub('', s))
+    return sum(2 if unicodedata.east_asian_width(c) in "WF" else 1
+               for c in ANSI_RE.sub('', s))
 
 def hide_cursor():
     sys.stdout.write("\033[?25l")
@@ -175,10 +188,14 @@ def exit_alt_screen():
 
 # ------------------------------------------------------------------ hardware mapping (RK3576)
 
-CPU_POLICIES = sorted([
-    p for p in os.listdir("/sys/devices/system/cpu/cpufreq")
-    if p.startswith("policy")
-])
+CPU_ROOT = Path("/sys/devices/system/cpu/cpufreq")
+CPU_POLICIES = sorted(p.name for p in CPU_ROOT.glob("policy*"))
+DEVFREQ_PATHS = {
+    "DDR": Path("/sys/class/devfreq/dmc"),
+    "NPU": Path("/sys/class/devfreq/27700000.npu"),
+    "GPU": Path("/sys/devices/platform/27800000.gpu/devfreq/27800000.gpu"),
+}
+DMC_DEVICE_TREE = Path("/proc/device-tree/dmc")
 
 def read_cpuinfo_max_freq(policy):
     return read_int(f"/sys/devices/system/cpu/cpufreq/{policy}/cpuinfo_max_freq") * 1000
@@ -202,6 +219,20 @@ DDR_MAX_FREQ = read_hw_max_freq("/sys/class/devfreq/dmc") or 2736000000
 # 0 soc-thermal, 1 bigcore-thermal, 2 little-core-thermal,
 # 3 ddr-thermal, 4 npu-thermal, 5 gpu-thermal
 
+def cpu_load(stats, previous, names):
+    total_delta = 0
+    idle_delta = 0
+    for name in names:
+        if name not in stats or not previous or name not in previous:
+            continue
+        total, idle = stats[name]
+        old_total, old_idle = previous[name]
+        if total > old_total:
+            total_delta += total - old_total
+            idle_delta += max(0, idle - old_idle)
+    return max(0.0, min(100.0, (total_delta - idle_delta) * 100 / total_delta)) if total_delta else 0.0
+
+
 def cpu_info(prev_stat):
     freqs = []
     for p in CPU_POLICIES:
@@ -215,18 +246,15 @@ def cpu_info(prev_stat):
             freq_pct += (f / m) * 100
     freq_pct /= len(freqs) if freqs else 1
 
-    usage = 0.0
-    line = read_str("/proc/stat").splitlines()[0]
-    parts = list(map(int, line.split()[1:]))
-    total = sum(parts)
-    idle = parts[3] + parts[4]
-    if prev_stat:
-        p_total, p_idle = prev_stat
-        d_total = total - p_total
-        d_idle = idle - p_idle
-        if d_total > 0:
-            usage = (d_total - d_idle) / d_total * 100.0
-    new_stat = (total, idle)
+    stats = {}
+    for line in read_str("/proc/stat").splitlines():
+        fields = line.split()
+        if fields and re.fullmatch(r"cpu\d*", fields[0]):
+            # guest 时间已包含在 user/nice 中，前八列避免重复计入。
+            parts = list(map(int, fields[1:9]))
+            stats[fields[0]] = (sum(parts), parts[3] + parts[4])
+    small_cpus = [f"cpu{number}" for number in read_str(CPU_ROOT / "policy0/related_cpus").split()]
+    big_cpus = [f"cpu{number}" for number in read_str(CPU_ROOT / "policy4/related_cpus").split()]
 
     t1 = read_int("/sys/class/thermal/thermal_zone1/temp") / 1000.0
     t2 = read_int("/sys/class/thermal/thermal_zone2/temp") / 1000.0
@@ -236,20 +264,27 @@ def cpu_info(prev_stat):
         "name": "CPU",
         "freq_hz": avg_freq,
         "freq_pct": freq_pct,
-        "load_pct": usage,
+        "load_pct": cpu_load(stats, prev_stat, ["cpu"]),
+        "small_load_pct": cpu_load(stats, prev_stat, small_cpus),
+        "big_load_pct": cpu_load(stats, prev_stat, big_cpus),
         "temp_c": temp,
-        "_stat": new_stat,
+        "_stat": stats,
     }
 
 def ddr_info():
     hz = read_int("/sys/class/devfreq/dmc/cur_freq")
-    load = parse_load(read_str("/sys/class/devfreq/dmc/load"))
+    bandwidth = parse_load(read_str("/sys/class/devfreq/dmc/load"))
+    total, available = memory_info()
+    used = total - available
     temp = read_int("/sys/class/thermal/thermal_zone3/temp") / 1000.0
     return {
         "name": "DDR",
         "freq_hz": hz,
         "freq_pct": (hz / DDR_MAX_FREQ * 100) if DDR_MAX_FREQ else 0,
-        "load_pct": load,
+        "load_pct": bandwidth,
+        "memory_pct": used * 100 / total if total else 0,
+        "memory_used": used,
+        "memory_total": total,
         "temp_c": temp,
     }
 
@@ -291,6 +326,376 @@ def npu_info():
         "temp_c": temp,
     }
 
+# ------------------------------------------------------------------ 交互与资源控制
+
+RESOURCES = ("CPU", "DDR", "NPU", "GPU")
+AUTO_GOVERNORS = {
+    "CPU": "ondemand", "DDR": "dmc_ondemand",
+    "NPU": "rknpu_ondemand", "GPU": "simple_ondemand",
+}
+
+
+def consume_keys(data, state=""):
+    keys = []
+    for value in data:
+        if state == "escape":
+            state = "sequence" if value in (ord("["), ord("O")) else ""
+        elif state == "sequence":
+            if 0x40 <= value <= 0x7e:
+                state = ""
+        elif value == 27:
+            state = "escape"
+        elif value == 3:
+            keys.append("q")
+        elif chr(value) in "12345678qQ":
+            keys.append(chr(value).lower())
+    return keys, state
+
+
+def terminal_input(fd):
+    original = termios.tcgetattr(fd)
+    active = termios.tcgetattr(fd)
+    active[0] &= ~(termios.IXON | termios.IXOFF)
+    active[3] &= ~(termios.ECHO | termios.ECHONL | termios.ICANON |
+                   termios.IEXTEN | termios.ISIG)
+    active[6][termios.VMIN] = 1
+    active[6][termios.VTIME] = 0
+    termios.tcsetattr(fd, termios.TCSAFLUSH, active)
+    return original
+
+
+def memory_info():
+    values = {}
+    for line in read_str("/proc/meminfo").splitlines():
+        name, value = line.split(":", 1)
+        if name in ("MemTotal", "MemAvailable"):
+            values[name] = int(value.split()[0]) * 1024
+    return values["MemTotal"], values["MemAvailable"]
+
+
+def memory_test_bytes(total, available):
+    reserve = max(512 * 1024 ** 2, total // 10)
+    size = (available - reserve) // (1024 ** 2) * (1024 ** 2)
+    if size < 64 * 1024 ** 2:
+        raise ValueError("可用内存不足，需预留至少 512 MiB 或总内存的 10%")
+    return size
+
+
+def frequency_nodes(name):
+    if name == "CPU":
+        return [(CPU_ROOT / policy, "scaling_min_freq", "scaling_max_freq",
+                 "scaling_governor", "scaling_available_frequencies",
+                 "scaling_available_governors") for policy in CPU_POLICIES]
+    return [(DEVFREQ_PATHS[name], "min_freq", "max_freq", "governor",
+             "available_frequencies", "available_governors")]
+
+
+def frequency_settings(node):
+    path, low, high, governor, _, _ = node
+    return (int((path / low).read_text()), int((path / high).read_text()),
+            (path / governor).read_text().strip())
+
+
+def write_frequency(node, settings):
+    path, low, high, governor, _, _ = node
+    minimum, maximum, mode = settings
+    current_min = int((path / low).read_text())
+    # 降低上限时先降低下限，避免内核拒绝 min > max。
+    order = [(low, minimum), (high, maximum)] if maximum < current_min else [
+        (high, maximum), (low, minimum)]
+    for field, value in order:
+        (path / field).write_text(str(value))
+    (path / governor).write_text(mode)
+    if frequency_settings(node) != settings:
+        raise OSError(f"{path.name} 调频设置读回不一致")
+
+
+def change_frequency(name, locked):
+    nodes = frequency_nodes(name)
+    if not nodes:
+        raise OSError(f"{name} 调频接口不存在")
+    previous = [(node, frequency_settings(node)) for node in nodes]
+    targets = []
+    for node, current in previous:
+        path, _, _, _, frequencies, governors = node
+        choices = [int(value) for value in (path / frequencies).read_text().split()]
+        modes = (path / governors).read_text().split()
+        mode = "performance" if locked else AUTO_GOVERNORS[name]
+        if not choices or mode not in modes:
+            raise ValueError(f"{path.name} 缺少可用频率或 {mode} 调频模式")
+        targets.append((node, (max(choices) if locked else min(choices), max(choices), mode)))
+    try:
+        for node, target in targets:
+            write_frequency(node, target)
+    except (OSError, ValueError) as error:
+        failures = []
+        for node, settings in reversed(previous):
+            try:
+                write_frequency(node, settings)
+            except (OSError, ValueError) as restore_error:
+                failures.append(str(restore_error))
+        if failures:
+            raise OSError(f"{error}；恢复失败：{'；'.join(failures)}") from error
+        raise
+
+
+def driver_fixed_frequency(name, mode):
+    if name == "NPU" and mode == "rknpu_ondemand":
+        # 该驱动保持 ondemand_freq 或 previous_freq，不按负载调节。
+        return True
+    if name != "DDR" or mode != "dmc_ondemand":
+        return False
+    auto_path = DMC_DEVICE_TREE / "auto-freq-en"
+    if auto_path.is_file() and int.from_bytes(auto_path.read_bytes(), "big") == 0:
+        return True
+    status = int(read_str(DEVFREQ_PATHS["DDR"] / "system_status") or "0", 0)
+    if not (status & 0x4300 or status & 0xc00 == 0xc00):
+        return False
+    # rockchip_dmc 在 ISP、CIF 或双显示场景使用设备树配置的 fixed_rate。
+    for property_name in ("system-status-freq", "system-status-level"):
+        path = DMC_DEVICE_TREE / property_name
+        if path.is_file():
+            data = path.read_bytes()
+            for offset in range(0, len(data) - 7, 8):
+                flag = int.from_bytes(data[offset:offset + 4], "big")
+                rate = int.from_bytes(data[offset + 4:offset + 8], "big")
+                if flag in (0x4000, 0x100, 0x200, 0xc00) and rate:
+                    return True
+    return False
+
+
+def frequency_status(name):
+    try:
+        nodes = frequency_nodes(name)
+        settings = [frequency_settings(node) for node in nodes]
+        if not settings:
+            return "不可用", False
+        locked = [minimum > 0 and minimum == maximum or
+                  mode in ("performance", "powersave", "userspace")
+                  for minimum, maximum, mode in settings]
+        if all(locked):
+            targets = []
+            for node, (low, high, mode) in zip(nodes, settings):
+                target = low if mode == "powersave" else high
+                if mode == "userspace":
+                    target = read_int(node[0] / ("scaling_cur_freq" if name == "CPU" else "cur_freq"))
+                targets.append(fmt_mhz(target * (1000 if name == "CPU" else 1)))
+            targets = "/".join(targets)
+            return f"已锁频 {targets}", True
+        if any(locked):
+            return f"部分锁频 {sum(locked)}/{len(locked)}", False
+        if driver_fixed_frequency(name, settings[0][2]):
+            target = read_int(nodes[0][0] / "target_freq") or read_int(nodes[0][0] / "cur_freq")
+            return f"驱动定频 {fmt_mhz(target)}", False
+        return "自动调频", False
+    except (OSError, ValueError):
+        return "读取失败", False
+
+
+def stress_commands(name):
+    if name == "GPU":
+        return [[sys.executable, str(Path(__file__).resolve()), "--gpu-worker"]]
+    if name == "NPU":
+        executable = shutil.which("rknn_common_test")
+        model = Path("/usr/share/model/RK3576/mobilenet_v1.rknn")
+        picture = Path("/usr/share/model/dog_224x224.jpg")
+        if not executable or not model.is_file() or not picture.is_file():
+            raise FileNotFoundError("缺少 rknn_common_test 或 RK3576 自带测试模型、图片")
+        return [[executable, str(model), str(picture), "1000000"] for _ in range(2)]
+    executable = shutil.which("stress-ng")
+    if not executable:
+        raise FileNotFoundError("缺少 stress-ng")
+    command = [executable, "--timeout", "24h", "--oomable"]
+    if name == "CPU":
+        command += ["--oom-avoid", "--cpu", str(os.cpu_count() or 1)]
+    elif name == "DDR":
+        size = memory_test_bytes(*memory_info())
+        # oom-avoid 按 MemFree 拒绝大于空闲页的分配，无法利用可回收缓存。
+        command += ["--vm", "1", "--vm-bytes", str(size), "--vm-keep",
+                    "--vm-populate", "--vm-method", "write64"]
+    return [command]
+
+
+def gpu_stress_worker():
+    import ctypes as ct
+    from ctypes.util import find_library
+
+    library = find_library("OpenCL")
+    if not library:
+        raise OSError("未找到系统 OpenCL 运行库")
+    cl = ct.CDLL(library)
+    pointer = ct.c_void_p
+    handles = ct.POINTER(pointer)
+    integer = ct.c_int
+    unsigned = ct.c_uint
+    size = ct.c_size_t
+    signatures = {
+        "clGetPlatformIDs": (integer, [unsigned, handles, ct.POINTER(unsigned)]),
+        "clGetDeviceIDs": (integer, [pointer, ct.c_uint64, unsigned, handles, ct.POINTER(unsigned)]),
+        "clCreateContext": (pointer, [pointer, unsigned, handles, pointer, pointer, ct.POINTER(integer)]),
+        "clCreateCommandQueue": (pointer, [pointer, pointer, ct.c_uint64, ct.POINTER(integer)]),
+        "clCreateBuffer": (pointer, [pointer, ct.c_uint64, size, pointer, ct.POINTER(integer)]),
+        "clCreateProgramWithSource": (pointer, [pointer, unsigned, ct.POINTER(ct.c_char_p), ct.POINTER(size), ct.POINTER(integer)]),
+        "clBuildProgram": (integer, [pointer, unsigned, handles, ct.c_char_p, pointer, pointer]),
+        "clGetProgramBuildInfo": (integer, [pointer, pointer, unsigned, size, pointer, ct.POINTER(size)]),
+        "clCreateKernel": (pointer, [pointer, ct.c_char_p, ct.POINTER(integer)]),
+        "clSetKernelArg": (integer, [pointer, unsigned, size, pointer]),
+        "clEnqueueNDRangeKernel": (integer, [pointer, pointer, unsigned, ct.POINTER(size), ct.POINTER(size), ct.POINTER(size), unsigned, handles, handles]),
+        "clFinish": (integer, [pointer]),
+    }
+    for name, (result, arguments) in signatures.items():
+        function = getattr(cl, name)
+        function.restype, function.argtypes = result, arguments
+    for name in ("clReleaseKernel", "clReleaseProgram", "clReleaseMemObject",
+                 "clReleaseCommandQueue", "clReleaseContext"):
+        getattr(cl, name).restype = integer
+        getattr(cl, name).argtypes = [pointer]
+
+    def checked(code, operation):
+        if code != 0:
+            raise OSError(f"{operation} 失败，OpenCL 返回 {code}")
+
+    count = unsigned()
+    checked(cl.clGetPlatformIDs(0, None, ct.byref(count)), "枚举 OpenCL 平台")
+    platforms = (pointer * count.value)()
+    checked(cl.clGetPlatformIDs(count, platforms, None), "读取 OpenCL 平台")
+    device = pointer()
+    for platform in platforms:
+        result = cl.clGetDeviceIDs(platform, 1 << 2, 1, ct.byref(device), None)
+        if result == 0:
+            break
+        if result != -1:
+            checked(result, "读取 GPU 设备")
+    if not device.value:
+        raise OSError("OpenCL 未提供 GPU 设备")
+
+    error = integer()
+    resources = []
+    stopping = False
+
+    def stop_worker(signum, frame):
+        nonlocal stopping
+        stopping = True
+
+    for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+        signal.signal(signum, stop_worker)
+    try:
+        context = cl.clCreateContext(None, 1, ct.byref(device), None, None, ct.byref(error))
+        checked(error.value, "创建 GPU 上下文")
+        resources.append((cl.clReleaseContext, context))
+        queue = cl.clCreateCommandQueue(context, device, 0, ct.byref(error))
+        checked(error.value, "创建 GPU 队列")
+        resources.append((cl.clReleaseCommandQueue, queue))
+        buffer = pointer(cl.clCreateBuffer(context, 1 << 1, 65536 * 16, None, ct.byref(error)))
+        checked(error.value, "分配 GPU 测试内存")
+        resources.append((cl.clReleaseMemObject, buffer))
+        source = ct.c_char_p(b"""
+        __kernel void rtop_load(__global float4 *output) {
+            size_t index = get_global_id(0);
+            float4 value = (float4)((float)(index & 255) / 256.0f, 0.2f, 0.3f, 0.4f);
+            for (int step = 0; step < 4096; ++step)
+                value = fma(value, (float4)(0.999f), (float4)(0.001f));
+            output[index] = value;
+        }
+        """)
+        program = cl.clCreateProgramWithSource(context, 1, ct.byref(source), None, ct.byref(error))
+        checked(error.value, "创建 GPU 测试程序")
+        resources.append((cl.clReleaseProgram, program))
+        result = cl.clBuildProgram(program, 1, ct.byref(device), None, None, None)
+        if result:
+            log = ct.create_string_buffer(4096)
+            cl.clGetProgramBuildInfo(program, device, 0x1183, len(log), log, None)
+            raise OSError(f"GPU 测试程序编译失败：{log.value.decode('utf-8', errors='replace')}")
+        kernel = cl.clCreateKernel(program, b"rtop_load", ct.byref(error))
+        checked(error.value, "创建 GPU 计算任务")
+        resources.append((cl.clReleaseKernel, kernel))
+        checked(cl.clSetKernelArg(kernel, 0, ct.sizeof(buffer), ct.byref(buffer)), "设置 GPU 参数")
+        global_size = size(65536)
+        print("OpenCL GPU 压力测试已启动", flush=True)
+        while not stopping:
+            checked(cl.clEnqueueNDRangeKernel(queue, kernel, 1, None, ct.byref(global_size),
+                                             None, 0, None, None), "执行 GPU 计算")
+            checked(cl.clFinish(queue), "等待 GPU 计算")
+    finally:
+        for release, resource in reversed(resources):
+            release(resource)
+    return 0
+
+
+def stop_stress(test):
+    for process in test["processes"]:
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+    for process in test["processes"]:
+        try:
+            process.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.wait(timeout=2)
+        process.stdout.close()
+    test["processes"] = []
+    test["status"] = "已停止"
+
+
+def start_stress(name, test):
+    commands = stress_commands(name)
+    test["output"] = b""
+    try:
+        for command in commands:
+            process = subprocess.Popen(command, stdin=subprocess.DEVNULL,
+                                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                       preexec_fn=os.setpgrp)
+            test["processes"].append(process)
+            os.set_blocking(process.stdout.fileno(), False)
+        test["status"] = "运行中"
+    except OSError:
+        stop_stress(test)
+        raise
+
+
+def poll_stress(test):
+    exited = []
+    for process in test["processes"]:
+        try:
+            test["output"] = (test["output"] + os.read(process.stdout.fileno(), 65536))[-4096:]
+        except BlockingIOError:
+            pass
+        if process.poll() is not None:
+            exited.append(process.returncode)
+    if exited:
+        output = test["output"].decode("utf-8", errors="replace").strip()
+        stop_stress(test)
+        test["status"] = f"已结束 ({exited[0]})"
+        if output:
+            lines = output.splitlines()
+            errors = [line for line in lines if re.search(r"error|fail|skipping|失败", line, re.I)]
+            return (errors or lines)[-1]
+    return ""
+
+
+def controls_panel(tests, message):
+    lines = [f"{TITLE_C}压力测试（再次按键停止）            锁频（再次按键取消）{RESET}"]
+    for index, name in enumerate(RESOURCES):
+        status, locked = frequency_status(name)
+        action = "取消锁频" if locked else "锁频"
+        label = "占满" if name == "DDR" else "压力"
+        left = f"[{index + 1}] {name} {label}: {tests[name]['status']}"
+        lines.append(left + " " * max(1, 36 - vlen(left)) +
+                     f"[{index + 5}] {name} {action}: {status}")
+    lines.append("DDR 占用测试预留 10% 内存，至少 512 MiB")
+    if message:
+        clean = ANSI_RE.sub("", message).replace("\r", " ").replace("\n", " ")
+        while vlen(clean) > 78:
+            clean = clean[:-1]
+        lines.append(f"{LABEL_C}{clean}{RESET}")
+    lines.append(f"{DIM}q / Ctrl+C 退出；停止压力测试，保留锁频设置{RESET}")
+    return lines
+
 # ------------------------------------------------------------------ drawing
 
 def card(d, width=CARD_W):
@@ -317,15 +722,28 @@ def card(d, width=CARD_W):
         BORDER_C + "│" + RESET + line + " " * pad + BORDER_C + "│" + RESET
     )
 
-    bar_l = hbar(d["load_pct"], width=BAR_W, color_fn=load_color)
-    line = (
-        f" {LABEL_C}Load{RESET} {bar_l} "
-        f"{fg(*load_color(d['load_pct']))}{d['load_pct']:5.1f}%{RESET}"
-    )
-    pad = w - vlen(line)
-    lines.append(
-        BORDER_C + "│" + RESET + line + " " * pad + BORDER_C + "│" + RESET
-    )
+    loads = [("小核", d["small_load_pct"]), ("大核", d["big_load_pct"])] if d["name"] == "CPU" else [
+        ("Load", d["load_pct"])]
+    for label, usage in loads:
+        bar_l = hbar(usage, width=BAR_W, color_fn=load_color)
+        line = (
+            f" {LABEL_C}{label}{RESET} {bar_l} "
+            f"{fg(*load_color(usage))}{usage:5.1f}%{RESET}"
+        )
+        pad = w - vlen(line)
+        lines.append(
+            BORDER_C + "│" + RESET + line + " " * pad + BORDER_C + "│" + RESET
+        )
+
+    if d["name"] == "DDR":
+        total = f"{d['memory_total'] / 1024 ** 3:.1f}".rstrip("0").rstrip(".")
+        usage = f"{d['memory_used'] / 1024 ** 3:.1f}/{total}GB"
+        bar_m = hbar(d["memory_pct"], width=BAR_W, color_fn=load_color)
+        line = f" {LABEL_C}Mem {RESET} {bar_m} {fg(*load_color(d['memory_pct']))}{usage}{RESET}"
+        pad = w - vlen(line)
+        lines.append(
+            BORDER_C + "│" + RESET + line + " " * pad + BORDER_C + "│" + RESET
+        )
 
     temp_vis = min(d["temp_c"], 100.0)
     bar_t = hbar(temp_vis, width=BAR_W, color_fn=temp_color)
@@ -344,11 +762,11 @@ def card(d, width=CARD_W):
     lines.append(bot)
     return lines
 
-def draw(devs):
+def draw(devs, tests=None, message=""):
     lines = []
-    title = "◆  RK3576  SYSTEM  MONITOR  ◆"
+    title = f"◆  RK3576  SYSTEM  MONITOR  {__version__}  ◆"
     subtitle = f"{time.strftime('%Y-%m-%d %H:%M:%S')}  |  Interval: {INTERVAL:.1f}s"
-    lines.append(f"\n{TITLE_C}{BOLD}{title:^80}{RESET}")
+    lines.append(f"{TITLE_C}{BOLD}{title:^80}{RESET}")
     lines.append(f"{DIM}{subtitle:^80}{RESET}\n")
 
     c0 = card(devs[0])
@@ -361,9 +779,8 @@ def draw(devs):
     c3 = card(devs[3])
     for a, b in zip(c2, c3):
         lines.append(a + gap + b)
-    lines.append("")
-    footer = f"{DIM}Press Ctrl+C to exit{RESET}"
-    lines.append(f"{footer:^80}")
+    if tests is not None:
+        lines.extend(controls_panel(tests, message))
     return "\n".join(lines)
 
 def render(text):
@@ -378,38 +795,105 @@ def render(text):
 # ------------------------------------------------------------------ main
 
 def main():
-    prev_stat = None
-    dummy = cpu_info(None)
-    prev_stat = dummy.get("_stat")
-    time.sleep(0.3)
+    global INTERVAL
+    args = parser.parse_args()
+    if args.gpu_worker:
+        return gpu_stress_worker()
+    INTERVAL = max(0.1, args.interval)
+    if not args.once and not (sys.stdin.isatty() and sys.stdout.isatty()):
+        parser.error("交互模式需要终端；单次输出请使用 --once")
+    tests = {name: {"processes": [], "status": "已停止", "output": b""} for name in RESOURCES}
+    terminal = None
+    stopping = False
+    message = ""
+    key_state = ""
 
-    info = cpu_info(prev_stat)
-    prev_stat = info.pop("_stat")
-    devs = [info, ddr_info(), gpu_info(), npu_info()]
-    frame = draw(devs)
+    def request_exit(signum, frame):
+        nonlocal stopping
+        stopping = True
 
-    if args.once:
-        print(frame)
-        return
+    previous_handlers = {}
+    for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+        previous_handlers[signum] = signal.signal(signum, request_exit)
 
-    enter_alt_screen()
-    hide_cursor()
+    errors = []
+    screen = False
     try:
-        while True:
-            info = cpu_info(prev_stat)
-            prev_stat = info.pop("_stat")
-            devs = [info, ddr_info(), gpu_info(), npu_info()]
-            frame = draw(devs)
-            render(frame)
-            time.sleep(INTERVAL)
-    except KeyboardInterrupt:
-        pass
+        if not args.once:
+            terminal = terminal_input(sys.stdin.fileno())
+        prev_stat = cpu_info(None).get("_stat")
+        next_frame = time.monotonic() + 0.3
+        if not args.once:
+            enter_alt_screen()
+            hide_cursor()
+            screen = True
+        while not stopping:
+            for name, test in tests.items():
+                result = poll_stress(test)
+                if result:
+                    message = f"{name}: {result}"
+                    next_frame = 0
+            if time.monotonic() >= next_frame:
+                info = cpu_info(prev_stat)
+                prev_stat = info.pop("_stat")
+                devs = [info, ddr_info(), gpu_info(), npu_info()]
+                frame = draw(devs, None if args.once else tests, message)
+                if args.once:
+                    print(frame)
+                    break
+                render(frame)
+                next_frame = time.monotonic() + INTERVAL
+            delay = max(0, min(0.1, next_frame - time.monotonic()))
+            if args.once:
+                time.sleep(delay)
+                continue
+            if not select.select([sys.stdin], [], [], delay)[0]:
+                continue
+            data = os.read(sys.stdin.fileno(), 4096)
+            if not data:
+                break
+            keys, key_state = consume_keys(data, key_state)
+            for key in keys:
+                if key == "q":
+                    stopping = True
+                    break
+                number = int(key)
+                name = RESOURCES[(number - 1) % 4]
+                try:
+                    if number <= 4:
+                        if tests[name]["processes"]:
+                            stop_stress(tests[name])
+                        else:
+                            start_stress(name, tests[name])
+                        message = f"{name} 测试{tests[name]['status']}"
+                    else:
+                        _, locked = frequency_status(name)
+                        change_frequency(name, not locked)
+                        message = f"{name} {frequency_status(name)[0]}"
+                except (OSError, ValueError) as error:
+                    message = f"{name}: {error}"
+                next_frame = 0
     finally:
-        # clear trailing content before leaving alt screen
-        sys.stdout.write("\033[2J\033[H")
-        sys.stdout.flush()
-        exit_alt_screen()
-        show_cursor()
+        try:
+            for name, test in tests.items():
+                try:
+                    stop_stress(test)
+                except (OSError, subprocess.TimeoutExpired) as error:
+                    errors.append(f"{name} 停止失败：{error}")
+        finally:
+            try:
+                if terminal is not None:
+                    termios.tcsetattr(sys.stdin.fileno(), termios.TCSAFLUSH, terminal)
+            finally:
+                if screen:
+                    exit_alt_screen()
+                    show_cursor()
+                for signum, handler in previous_handlers.items():
+                    signal.signal(signum, handler)
+    for error in errors:
+        print(error, file=sys.stderr)
+    return 1 if errors else 0
+
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
