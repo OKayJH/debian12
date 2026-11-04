@@ -1,0 +1,415 @@
+#!/usr/bin/env python3
+"""
+rtop - RK3576 System Monitor
+实时监控 CPU / DDR / GPU / NPU 的频率、利用率与温度
+"""
+
+import argparse
+import os
+import re
+import sys
+import time
+
+# ------------------------------------------------------------------ args
+parser = argparse.ArgumentParser(
+    description="RK3576 System Monitor - watch CPU/DDR/GPU/NPU freq, load and temp",
+    formatter_class=argparse.RawDescriptionHelpFormatter,
+    epilog="""
+Examples:
+  rtop              # Start interactive monitor (default 1s refresh)
+  rtop -i 0.5       # Refresh every 0.5 seconds
+  rtop --once       # Print one frame to stdout and exit
+""")
+parser.add_argument("-i", "--interval", type=float, default=1.0,
+                    help="refresh interval in seconds (default: 1.0)")
+parser.add_argument("-o", "--once", action="store_true",
+                    help="print a single frame and exit")
+args = parser.parse_args()
+
+# ------------------------------------------------------------------ config
+INTERVAL = max(0.1, args.interval)
+CARD_W = 36
+BAR_W = 14
+
+# ANSI helpers
+RESET = "\033[0m"
+BOLD = "\033[1m"
+DIM = "\033[2m"
+
+def fg(r, g, b):
+    return f"\033[38;2;{r};{g};{b}m"
+
+BORDER_C = fg(120, 160, 255)
+TITLE_C = fg(180, 180, 255)
+LABEL_C = fg(200, 200, 200)
+UNIT_C = fg(140, 140, 180)
+
+# ------------------------------------------------------------------ colors
+
+def temp_color(t):
+    """30°C (cyan) -> 100°C (red)"""
+    t = max(30.0, min(100.0, t))
+    if t <= 45:
+        p = (t - 30) / 15.0
+        r = int(0)
+        g = int(200 + 55 * p)
+        b = int(255)
+    elif t <= 60:
+        p = (t - 45) / 15.0
+        r = int(0 + 255 * p)
+        g = 255
+        b = int(255 * (1 - p))
+    elif t <= 80:
+        p = (t - 60) / 20.0
+        r = 255
+        g = int(255 * (1 - p) + 100 * p)
+        b = 0
+    else:
+        p = (t - 80) / 20.0
+        r = 255
+        g = int(100 * (1 - p))
+        b = 0
+    return (r, g, b)
+
+def load_color(p):
+    p = max(0.0, min(100.0, p))
+    if p < 30:
+        return (0, 255, 160)
+    elif p < 60:
+        p2 = (p - 30) / 30.0
+        return (int(255 * p2), 255, int(160 * (1 - p2)))
+    elif p < 85:
+        p2 = (p - 60) / 25.0
+        return (255, int(255 * (1 - p2)), 0)
+    else:
+        p2 = (p - 85) / 15.0
+        return (255, int(100 * (1 - p2)), 0)
+
+def freq_color(p):
+    p = max(0.0, min(100.0, p))
+    return (int(80 + 100 * p / 100.0), int(120 + 80 * (1 - p / 100.0)), 255)
+
+# ------------------------------------------------------------------ progress bar
+BLOCKS = ["", "▏", "▎", "▍", "▌", "▋", "▊", "▉", "█"]
+
+def hbar(percent, width=BAR_W, color_fn=None):
+    percent = max(0.0, min(100.0, percent))
+    total = width * 8 * percent / 100.0
+    full = int(total / 8)
+    rem = int(total % 8)
+    empty = width - full - (1 if rem else 0)
+    bar = "█" * full
+    if rem:
+        bar += BLOCKS[rem]
+    bar += "░" * empty
+    if color_fn:
+        c = color_fn(percent)
+        bar = fg(*c) + bar + RESET
+    return bar
+
+# ------------------------------------------------------------------ utils
+
+def read_int(path):
+    try:
+        with open(path, "r") as f:
+            return int(f.read().strip())
+    except Exception:
+        return 0
+
+def read_str(path):
+    try:
+        with open(path, "r") as f:
+            return f.read().strip()
+    except Exception:
+        return ""
+
+def fmt_mhz(hz):
+    mhz = hz / 1e6
+    if mhz >= 1000:
+        return f"{mhz/1000:.2f}GHz"
+    else:
+        return f"{mhz:.0f}MHz"
+
+def parse_load(s):
+    if not s:
+        return 0.0
+    try:
+        return float(s.split("@")[0])
+    except Exception:
+        return 0.0
+
+def parse_rknpu_load(path):
+    """Parse /sys/kernel/debug/rknpu/load for real NPU utilization.
+    Format: NPU load:  Core0:  0%, Core1:  0%,
+    Returns average percentage across all cores."""
+    try:
+        text = read_str(path)
+        cores = re.findall(r'Core\d+:\s*(\d+)%', text)
+        if not cores:
+            return 0.0
+        vals = [int(c) for c in cores]
+        return sum(vals) / len(vals)
+    except Exception:
+        return 0.0
+
+ANSI_RE = re.compile(r'\x1b\[[0-9;]*m')
+
+def vlen(s):
+    return len(ANSI_RE.sub('', s))
+
+def hide_cursor():
+    sys.stdout.write("\033[?25l")
+    sys.stdout.flush()
+
+def show_cursor():
+    sys.stdout.write("\033[?25h")
+    sys.stdout.flush()
+
+def enter_alt_screen():
+    sys.stdout.write("\033[?1049h\033[2J\033[H")
+    sys.stdout.flush()
+
+def exit_alt_screen():
+    sys.stdout.write("\033[?1049l")
+    sys.stdout.flush()
+
+# ------------------------------------------------------------------ hardware mapping (RK3576)
+
+CPU_POLICIES = sorted([
+    p for p in os.listdir("/sys/devices/system/cpu/cpufreq")
+    if p.startswith("policy")
+])
+
+def read_cpuinfo_max_freq(policy):
+    return read_int(f"/sys/devices/system/cpu/cpufreq/{policy}/cpuinfo_max_freq") * 1000
+
+def read_hw_max_freq(devfreq_path):
+    """Read hardware max freq from available_frequencies (fixed).
+    Falls back to max_freq if unavailable."""
+    avail = read_str(f"{devfreq_path}/available_frequencies")
+    if avail:
+        freqs = [int(f) for f in avail.split()]
+        return max(freqs) if freqs else 0
+    return read_int(f"{devfreq_path}/max_freq")
+
+CPU_MAX_FREQS = [read_cpuinfo_max_freq(p) for p in CPU_POLICIES]
+
+GPU_MAX_FREQ = read_hw_max_freq("/sys/devices/platform/27800000.gpu/devfreq/27800000.gpu") or 900000000
+NPU_MAX_FREQ = read_hw_max_freq("/sys/class/devfreq/27700000.npu") or 950000000
+DDR_MAX_FREQ = read_hw_max_freq("/sys/class/devfreq/dmc") or 2736000000
+
+# thermal zone indices detected on RK3576:
+# 0 soc-thermal, 1 bigcore-thermal, 2 little-core-thermal,
+# 3 ddr-thermal, 4 npu-thermal, 5 gpu-thermal
+
+def cpu_info(prev_stat):
+    freqs = []
+    for p in CPU_POLICIES:
+        freqs.append(
+            read_int(f"/sys/devices/system/cpu/cpufreq/{p}/scaling_cur_freq") * 1000
+        )
+    avg_freq = sum(freqs) / len(freqs) if freqs else 0
+    freq_pct = 0.0
+    for f, m in zip(freqs, CPU_MAX_FREQS):
+        if m:
+            freq_pct += (f / m) * 100
+    freq_pct /= len(freqs) if freqs else 1
+
+    usage = 0.0
+    line = read_str("/proc/stat").splitlines()[0]
+    parts = list(map(int, line.split()[1:]))
+    total = sum(parts)
+    idle = parts[3] + parts[4]
+    if prev_stat:
+        p_total, p_idle = prev_stat
+        d_total = total - p_total
+        d_idle = idle - p_idle
+        if d_total > 0:
+            usage = (d_total - d_idle) / d_total * 100.0
+    new_stat = (total, idle)
+
+    t1 = read_int("/sys/class/thermal/thermal_zone1/temp") / 1000.0
+    t2 = read_int("/sys/class/thermal/thermal_zone2/temp") / 1000.0
+    temp = max(t1, t2)
+
+    return {
+        "name": "CPU",
+        "freq_hz": avg_freq,
+        "freq_pct": freq_pct,
+        "load_pct": usage,
+        "temp_c": temp,
+        "_stat": new_stat,
+    }
+
+def ddr_info():
+    hz = read_int("/sys/class/devfreq/dmc/cur_freq")
+    load = parse_load(read_str("/sys/class/devfreq/dmc/load"))
+    temp = read_int("/sys/class/thermal/thermal_zone3/temp") / 1000.0
+    return {
+        "name": "DDR",
+        "freq_hz": hz,
+        "freq_pct": (hz / DDR_MAX_FREQ * 100) if DDR_MAX_FREQ else 0,
+        "load_pct": load,
+        "temp_c": temp,
+    }
+
+def gpu_info():
+    hz = read_int(
+        "/sys/devices/platform/27800000.gpu/devfreq/27800000.gpu/cur_freq"
+    )
+    load = parse_load(
+        read_str(
+            "/sys/devices/platform/27800000.gpu/devfreq/27800000.gpu/load"
+        )
+    )
+    temp = read_int("/sys/class/thermal/thermal_zone5/temp") / 1000.0
+    # When GPU is runtime-suspended the clock is actually off,
+    # devfreq cur_freq is stale.
+    if read_str("/sys/devices/platform/27800000.gpu/power/runtime_status") == "suspended":
+        hz = 0
+    return {
+        "name": "GPU",
+        "freq_hz": hz,
+        "freq_pct": (hz / GPU_MAX_FREQ * 100) if GPU_MAX_FREQ else 0,
+        "load_pct": load,
+        "temp_c": temp,
+    }
+
+def npu_info():
+    hz = read_int("/sys/class/devfreq/27700000.npu/cur_freq")
+    # debugfs provides real per-core utilization
+    load = parse_rknpu_load("/sys/kernel/debug/rknpu/load")
+    temp = read_int("/sys/class/thermal/thermal_zone4/temp") / 1000.0
+    # When NPU is powered off, devfreq cur_freq is stale.
+    if read_str("/sys/kernel/debug/rknpu/power") == "off":
+        hz = 0
+    return {
+        "name": "NPU",
+        "freq_hz": hz,
+        "freq_pct": (hz / NPU_MAX_FREQ * 100) if NPU_MAX_FREQ else 0,
+        "load_pct": load,
+        "temp_c": temp,
+    }
+
+# ------------------------------------------------------------------ drawing
+
+def card(d, width=CARD_W):
+    w = width
+    lines = []
+    title = f" {d['name']} "
+    pad = w - len(title)
+    left = pad // 2
+    right = pad - left
+    top = (
+        BORDER_C + "╭" + "─" * left + TITLE_C + BOLD + title + RESET
+        + BORDER_C + "─" * right + "╮" + RESET
+    )
+    lines.append(top)
+
+    bar_f = hbar(d["freq_pct"], width=BAR_W, color_fn=freq_color)
+    txt_f = UNIT_C + fmt_mhz(d["freq_hz"]) + RESET
+    line = (
+        f" {LABEL_C}Freq{RESET} {bar_f} "
+        f"{fg(*freq_color(d['freq_pct']))}{d['freq_pct']:5.1f}%{RESET} {txt_f}"
+    )
+    pad = w - vlen(line)
+    lines.append(
+        BORDER_C + "│" + RESET + line + " " * pad + BORDER_C + "│" + RESET
+    )
+
+    bar_l = hbar(d["load_pct"], width=BAR_W, color_fn=load_color)
+    line = (
+        f" {LABEL_C}Load{RESET} {bar_l} "
+        f"{fg(*load_color(d['load_pct']))}{d['load_pct']:5.1f}%{RESET}"
+    )
+    pad = w - vlen(line)
+    lines.append(
+        BORDER_C + "│" + RESET + line + " " * pad + BORDER_C + "│" + RESET
+    )
+
+    temp_vis = min(d["temp_c"], 100.0)
+    bar_t = hbar(temp_vis, width=BAR_W, color_fn=temp_color)
+    tc = temp_color(d["temp_c"])
+    temp_str = f"{d['temp_c']:5.1f}°C"
+    line = (
+        f" {LABEL_C}Temp{RESET} {bar_t} "
+        f"{fg(*tc)}{temp_str}{RESET}"
+    )
+    pad = w - vlen(line)
+    lines.append(
+        BORDER_C + "│" + RESET + line + " " * pad + BORDER_C + "│" + RESET
+    )
+
+    bot = BORDER_C + "╰" + "─" * w + "╯" + RESET
+    lines.append(bot)
+    return lines
+
+def draw(devs):
+    lines = []
+    title = "◆  RK3576  SYSTEM  MONITOR  ◆"
+    subtitle = f"{time.strftime('%Y-%m-%d %H:%M:%S')}  |  Interval: {INTERVAL:.1f}s"
+    lines.append(f"\n{TITLE_C}{BOLD}{title:^80}{RESET}")
+    lines.append(f"{DIM}{subtitle:^80}{RESET}\n")
+
+    c0 = card(devs[0])
+    c1 = card(devs[1])
+    gap = "  "
+    for a, b in zip(c0, c1):
+        lines.append(a + gap + b)
+    lines.append("")
+    c2 = card(devs[2])
+    c3 = card(devs[3])
+    for a, b in zip(c2, c3):
+        lines.append(a + gap + b)
+    lines.append("")
+    footer = f"{DIM}Press Ctrl+C to exit{RESET}"
+    lines.append(f"{footer:^80}")
+    return "\n".join(lines)
+
+def render(text):
+    # Move cursor to home, overwrite without full clear to avoid flicker
+    out = "\033[H"
+    for line in text.splitlines():
+        out += line + "\033[0K\n"
+    out += "\033[0J"
+    sys.stdout.write(out)
+    sys.stdout.flush()
+
+# ------------------------------------------------------------------ main
+
+def main():
+    prev_stat = None
+    dummy = cpu_info(None)
+    prev_stat = dummy.get("_stat")
+    time.sleep(0.3)
+
+    info = cpu_info(prev_stat)
+    prev_stat = info.pop("_stat")
+    devs = [info, ddr_info(), gpu_info(), npu_info()]
+    frame = draw(devs)
+
+    if args.once:
+        print(frame)
+        return
+
+    enter_alt_screen()
+    hide_cursor()
+    try:
+        while True:
+            info = cpu_info(prev_stat)
+            prev_stat = info.pop("_stat")
+            devs = [info, ddr_info(), gpu_info(), npu_info()]
+            frame = draw(devs)
+            render(frame)
+            time.sleep(INTERVAL)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        # clear trailing content before leaving alt screen
+        sys.stdout.write("\033[2J\033[H")
+        sys.stdout.flush()
+        exit_alt_screen()
+        show_cursor()
+
+if __name__ == "__main__":
+    main()
