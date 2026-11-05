@@ -111,6 +111,12 @@ fi
 
 HOSTNAME=$(echo "$OUTPUT" | grep '^hostname=' | cut -d'=' -f2-)
 
+# CamOS 保存的主机名在每次开机时优先于硬件默认名称，MAC 仍由 CPU ID 生成。
+CUSTOM_HOSTNAME=$(cat /etc/dlcvcam-hostname 2>/dev/null || true)
+if [[ "$CUSTOM_HOSTNAME" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$ ]]; then
+    HOSTNAME="$CUSTOM_HOSTNAME"
+fi
+
 # --- 3. Set and persist hostname ---
 if [ -n "$HOSTNAME" ]; then
     CURRENT_HOSTNAME=$(cat /etc/hostname 2>/dev/null || echo "")
