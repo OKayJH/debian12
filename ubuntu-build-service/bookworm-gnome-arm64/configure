@@ -10,16 +10,18 @@ set -e
 
 echo "I: create configuration"
 MIRROR="${RK_DEBIAN_MIRROR:-mirrors.tuna.tsinghua.edu.cn}"
+SECURITY_MIRROR="${RK_DEBIAN_SECURITY_MIRROR:-mirrors.aliyun.com/debian-security}"
 export LB_BOOTSTRAP_INCLUDE="apt-transport-https gnupg"
 lb config \
  --mirror-bootstrap "http://${MIRROR}/debian" \
  --mirror-chroot "http://${MIRROR}/debian" \
- --mirror-chroot-security "http://${MIRROR}/debian-security" \
+ --mirror-chroot-security "http://${SECURITY_MIRROR}" \
  --mirror-binary "http://${MIRROR}/debian" \
- --mirror-binary-security "http://${MIRROR}/debian-security" \
+ --mirror-binary-security "http://${SECURITY_MIRROR}" \
  --apt-indices false \
  --apt-recommends false \
  --apt-secure false \
+ --source false \
  --architectures arm64 \
  --archive-areas 'main contrib' \
  --backports false \
