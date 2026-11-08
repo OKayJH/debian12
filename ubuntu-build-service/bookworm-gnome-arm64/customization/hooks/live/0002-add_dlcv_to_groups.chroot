@@ -14,5 +14,5 @@ for group in $DEFGROUPS; do
 done
 unset IFS
 
-echo "I: add dlcv to ($DEFGROUPS) groups"
-usermod -a -G ${DEFGROUPS} dlcv
+echo "I: add okay to ($DEFGROUPS) groups"
+usermod -a -G ${DEFGROUPS} okay

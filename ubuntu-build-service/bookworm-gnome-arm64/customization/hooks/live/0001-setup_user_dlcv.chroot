@@ -1,7 +1,7 @@
 #!/bin/sh  
 
-echo "I: create dlcv user"
-adduser --gecos dlcv --disabled-password dlcv
+echo "I: create okay user"
+adduser --gecos okay --disabled-password okay
 
-echo "I: set dlcv user password"
-echo "dlcv:dlcvai" | chpasswd
+echo "I: set okay user password"
+echo "okay:168428" | chpasswd

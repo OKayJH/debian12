@@ -24,7 +24,7 @@ lb config \
  --backports false \
  --binary-filesystem ext4 \
  --binary-images tar \
- --bootappend-live "hostname=DLCVCAM username=dlcv" \
+ --bootappend-live "hostname=OKayPi username=okay" \
  --bootloader "syslinux" \
  --bootstrap-qemu-arch arm64 \
  --bootstrap-qemu-static /usr/bin/qemu-aarch64-static \
