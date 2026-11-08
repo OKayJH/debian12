@@ -304,30 +304,39 @@ if [[ "$TARGET" == "gnome" || "$TARGET" == "xfce" || "$TARGET" == "lxde" ]]; the
     \${APT_INSTALL} /packages/gst-plugins-good1.0/*.deb
 
     # RK3576 量产固件预装 MPP / gst-rkmpp 版本过旧，JPEG 编码器不可用，
-    # 在此处从源码编译安装 develop 分支 MPP 与 gst-rockchip 插件进行覆盖。
+    # 优先检测 overlay 中预置的 develop 分支 MPP 与 gst-rockchip 库；若不存在则安全编译安装。
     if [[ "$SOC" == "rk3576" ]]; then
-        set -e
         echo -e "\033[47;36m ------ Upgrade MPP + gst-rockchip for RK3576 JPEG encoder ---------- \033[0m"
-        \${APT_INSTALL} git cmake build-essential pkg-config libdrm-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev meson ninja-build
-        rm -rf /tmp/mpp_build /tmp/gst_rockchip_build
-        git clone --depth 1 --branch develop https://github.com/rockchip-linux/mpp.git /tmp/mpp_build
-        [[ -f /tmp/mpp_build/build/linux/aarch64/make-Makefiles.bash ]] || { echo "FATAL: mpp clone incomplete"; exit 1; }
-        cd /tmp/mpp_build/build/linux/aarch64
-        ./make-Makefiles.bash
-        make -j\$(nproc)
-        make install
-        cp -f /usr/local/lib/librockchip_mpp.so* /usr/lib/aarch64-linux-gnu/
-        cp -f /usr/local/lib/librockchip_vpu.so* /usr/lib/aarch64-linux-gnu/
-        ldconfig
-        git clone --depth 1 https://github.com/englebert/gst-rockchip.git /tmp/gst_rockchip_build
-        [[ -f /tmp/gst_rockchip_build/meson.build ]] || { echo "FATAL: gst-rockchip clone incomplete"; exit 1; }
-        cd /tmp/gst_rockchip_build
-        meson setup build --prefix=/usr
-        ninja -C build
-        ninja -C build install
-        ldconfig
-        set +e
-        rm -rf /tmp/mpp_build /tmp/gst_rockchip_build
+        if [[ -f /usr/lib/aarch64-linux-gnu/gstreamer-1.0/libgstrockchipmpp.so && -f /usr/lib/aarch64-linux-gnu/librockchip_mpp.so.0 ]]; then
+            echo "Prebuilt RK3576 develop MPP and gst-rockchip libraries detected in overlay. Running ldconfig."
+            ldconfig
+        else
+            set -e
+            ${APT_INSTALL} git cmake build-essential pkg-config libdrm-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev meson ninja-build
+            rm -rf /tmp/mpp_build /tmp/gst_rockchip_build
+            git clone --depth 1 --branch develop https://github.com/rockchip-linux/mpp.git /tmp/mpp_build
+            [[ -f /tmp/mpp_build/build/linux/aarch64/make-Makefiles.bash ]] || { echo "FATAL: mpp clone incomplete"; exit 1; }
+            cd /tmp/mpp_build/build/linux/aarch64
+            sed -i 's/cmake --build \. -j/cmake --build . -j2 --target rockchip_mpp rockchip_vpu/g' make-Makefiles.bash
+            ./make-Makefiles.bash
+            cp -a mpp/librockchip_mpp.so* /usr/local/lib/
+            cp -a mpp/legacy/librockchip_vpu.so* /usr/local/lib/
+            mkdir -p /usr/local/include/rockchip && cp -a /tmp/mpp_build/inc/* /usr/local/include/rockchip/
+            mkdir -p /usr/local/lib/pkgconfig
+            cp -a rockchip_mpp.pc rockchip_vpu.pc /usr/local/lib/pkgconfig/
+            cp -f /usr/local/lib/librockchip_mpp.so* /usr/lib/aarch64-linux-gnu/
+            cp -f /usr/local/lib/librockchip_vpu.so* /usr/lib/aarch64-linux-gnu/
+            ldconfig
+            git clone --depth 1 https://github.com/englebert/gst-rockchip.git /tmp/gst_rockchip_build
+            [[ -f /tmp/gst_rockchip_build/meson.build ]] || { echo "FATAL: gst-rockchip clone incomplete"; exit 1; }
+            cd /tmp/gst_rockchip_build
+            PKG_CONFIG_PATH=/usr/local/lib/pkgconfig:/usr/lib/aarch64-linux-gnu/pkgconfig meson setup build --prefix=/usr
+            ninja -j2 -C build
+            ninja -C build install
+            ldconfig
+            set +e
+            rm -rf /tmp/mpp_build /tmp/gst_rockchip_build
+        fi
     fi
 elif [ "$TARGET" == "lite" ]; then
     echo -e "\033[47;36m ------ Setup Video---------- \033[0m"
