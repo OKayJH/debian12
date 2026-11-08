@@ -76,9 +76,8 @@ def main():
     if len(cpu_id) < 16:
         cpu_id = cpu_id.ljust(16, b'\x00')
 
-    # Hostname: CRC32 low 16 bits as 4-digit hex
-    crc = binascii.crc32(cpu_id) & 0xFFFFFFFF
-    hostname = "DLCVCAM-{:04x}".format(crc & 0xFFFF)
+    # Hostname: OKayPi
+    hostname = "OKayPi"
 
     # MAC per interface: SHA256(CPU_ID + iface_name), prefix 02:
     results = {"hostname": hostname}

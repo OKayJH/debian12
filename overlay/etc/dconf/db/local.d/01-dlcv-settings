@@ -3,12 +3,13 @@ picture-uri='file:///usr/share/images/desktop-base/lubancat-wallpaper.png'
 picture-uri-dark='file:///usr/share/images/desktop-base/lubancat-wallpaper.png'
 
 [org/gnome/settings-daemon/plugins/media-keys]
+terminal=['<Primary><Alt>t']
 custom-keybindings=['/org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/custom0/']
 
 [org/gnome/settings-daemon/plugins/media-keys/custom-keybindings/custom0]
 name='Open Terminal'
 command='gnome-terminal'
-binding='<Control><Shift>t'
+binding='<Control><Alt>t'
 
 [org/freedesktop/ibus/general]
 engines-order=['libpinyin', 'xkb:us::eng']

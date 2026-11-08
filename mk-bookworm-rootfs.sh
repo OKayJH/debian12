@@ -205,9 +205,9 @@ ID=$(stat --format %u $TARGET_ROOTFS_DIR)
 
 cat << EOF | sudo chroot $TARGET_ROOTFS_DIR /bin/bash
 
-# Proxy for package downloads during build
-export http_proxy=http://192.168.1.208:7897
-export https_proxy=http://192.168.1.208:7897
+# Proxy for package downloads during build (inherit host proxy if available)
+if [ -n "$http_proxy" ]; then export http_proxy="$http_proxy"; fi
+if [ -n "$https_proxy" ]; then export https_proxy="$https_proxy"; fi
 
 # Fixup owners
 if [ "$ID" -ne 0 ]; then
@@ -264,7 +264,7 @@ if [[ "$TARGET" == "gnome" ]]; then
 elif [[ "$TARGET" == "xfce" ]]; then
     \${APT_INSTALL} mpv fire-config-gui
     #Desktop background picture
-    chown -hR dlcv:dlcv /home/dlcv/.config || true
+    chown -hR okay:okay /home/okay/.config 2>/dev/null || true
     ln -sf /usr/share/images/desktop-base/lubancat-wallpaper.png /etc/alternatives/desktop-background
 elif [[ "$TARGET" == "lxde" ]]; then
     \${APT_INSTALL} mpv fire-config-gui
@@ -456,7 +456,7 @@ if [ -d /usr/lib/python3/dist-packages/gi ] && [ -d /root/dlcv/lib/python3.11/si
 fi
 
 # Fix DLCV environment ownership
-chown -hR dlcv:dlcv /root/dlcv 2>/dev/null || true
+chown -hR okay:okay /root/dlcv 2>/dev/null || true
 
 echo -e "\033[47;36m ---------- Configure ccache ---------- \033[0m"
 ccache --max-size=5G 2>/dev/null || true
@@ -466,38 +466,45 @@ apt list --installed | grep -v oldstable | cut -d/ -f1 | xargs apt-mark hold
 
 #---------------DLCV Customization--------------
 
-echo -e "\033[47;36m ---------- DLCV User/Hostname Setup -------- \033[0m"
-# Ensure hostname is DLCVCAM
-echo "DLCVCAM" > /etc/hostname
-sed -i 's/127.0.1.1.*/127.0.1.1\tDLCVCAM/' /etc/hosts
+echo -e "\033[47;36m ---------- OKayPi User/Hostname Setup -------- \033[0m"
+# Ensure hostname is OKayPi
+echo "OKayPi" > /etc/hostname
+sed -i 's/127.0.1.1.*/127.0.1.1\tOKayPi/' /etc/hosts
 
-# Ensure dlcv user exists with correct password and groups
-if ! id "dlcv" &>/dev/null; then
+# Ensure okay user exists with correct password and groups
+if ! id "okay" &>/dev/null; then
     if id "cat" &>/dev/null; then
-        echo "I: renaming cat user to dlcv"
-        usermod -l dlcv cat
-        usermod -d /home/dlcv -m dlcv
-        groupmod -n dlcv cat 2>/dev/null || true
+        echo "I: renaming cat user to okay"
+        usermod -l okay cat
+        usermod -d /home/okay -m okay
+        groupmod -n okay cat 2>/dev/null || true
+    elif id "dlcv" &>/dev/null; then
+        echo "I: renaming dlcv user to okay"
+        usermod -l okay dlcv
+        usermod -d /home/okay -m okay
+        groupmod -n okay dlcv 2>/dev/null || true
     else
-        echo "I: creating dlcv user"
-        adduser --gecos dlcv --disabled-password dlcv
-        usermod -a -G adm,dialout,cdrom,audio,dip,video,plugdev,bluetooth,pulse-access,sudo,systemd-journal,netdev,staff dlcv
+        echo "I: creating okay user"
+        adduser --gecos okay --disabled-password okay
+        usermod -a -G adm,dialout,cdrom,audio,dip,video,plugdev,bluetooth,pulse-access,sudo,systemd-journal,netdev,staff okay
     fi
 fi
-echo "dlcv:dlcvai" | chpasswd
+echo "okay:168428" | chpasswd
 
-# Remove old cat user if still exists (after rename or if it was separate)
-if id "cat" &>/dev/null; then
-    userdel -r cat 2>/dev/null || true
-fi
+# Remove old users if still exist
+for old_u in cat dlcv; do
+    if id "$old_u" &>/dev/null; then
+        userdel -r "$old_u" 2>/dev/null || true
+    fi
+done
 
-# Fix dlcv home ownership
-chown -hR dlcv:dlcv /home/dlcv 2>/dev/null || true
+# Fix okay home ownership
+chown -hR okay:okay /home/okay 2>/dev/null || true
 
-# Update gdm3 autologin to dlcv and force Xorg (disable Wayland for x11vnc compatibility)
+# Update gdm3 autologin to okay and force Xorg (disable Wayland for x11vnc compatibility)
 if [ -e /etc/gdm3/daemon.conf ]; then
     sed -i "s|^#*\\s*AutomaticLoginEnable = .*|AutomaticLoginEnable = true|" /etc/gdm3/daemon.conf
-    sed -i "s|^#*\\s*AutomaticLogin = .*|AutomaticLogin = dlcv|" /etc/gdm3/daemon.conf
+    sed -i "s|^#*\\s*AutomaticLogin = .*|AutomaticLogin = okay|" /etc/gdm3/daemon.conf
     sed -i "s|^#*\\s*WaylandEnable = .*|WaylandEnable = false|" /etc/gdm3/daemon.conf
 fi
 
@@ -514,23 +521,23 @@ apt-get update
 \${APT_INSTALL} gh
 
 echo -e "\033[47;36m ---------- Install oh-my-zsh -------- \033[0m"
-# Install oh-my-zsh for dlcv user
-if [ -d /home/dlcv ]; then
+# Install oh-my-zsh for okay user
+if [ -d /home/okay ]; then
     (
-        export HOME=/home/dlcv
+        export HOME=/home/okay
         export RUNZSH=no
         export CHSH=no
-        export ZSH=/home/dlcv/.oh-my-zsh
+        export ZSH=/home/okay/.oh-my-zsh
         sh -c "\$(curl --retry 3 --connect-timeout 10 -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" || \
             sh -c "\$(curl --retry 3 --connect-timeout 10 -fsSL https://gitee.com/mirrors/oh-my-zsh/raw/master/tools/install.sh)"
     )
-    if [ -f /home/dlcv/.zshrc ]; then
-        sed -i 's/^# DISABLE_AUTO_UPDATE="true"/DISABLE_AUTO_UPDATE="true"/' /home/dlcv/.zshrc
-        sed -i 's/^DISABLE_AUTO_UPDATE="false"/DISABLE_AUTO_UPDATE="true"/' /home/dlcv/.zshrc
-        echo "zstyle ':omz:update' mode disabled" >> /home/dlcv/.zshrc
+    if [ -f /home/okay/.zshrc ]; then
+        sed -i 's/^# DISABLE_AUTO_UPDATE="true"/DISABLE_AUTO_UPDATE="true"/' /home/okay/.zshrc
+        sed -i 's/^DISABLE_AUTO_UPDATE="false"/DISABLE_AUTO_UPDATE="true"/' /home/okay/.zshrc
+        echo "zstyle ':omz:update' mode disabled" >> /home/okay/.zshrc
     fi
-    chown -hR dlcv:dlcv /home/dlcv/.oh-my-zsh 2>/dev/null || true
-    chown dlcv:dlcv /home/dlcv/.zshrc 2>/dev/null || true
+    chown -hR okay:okay /home/okay/.oh-my-zsh 2>/dev/null || true
+    chown okay:okay /home/okay/.zshrc 2>/dev/null || true
 fi
 
 # Install oh-my-zsh for root user
@@ -543,13 +550,13 @@ if [ -f /root/.zshrc ]; then
     echo "zstyle ':omz:update' mode disabled" >> /root/.zshrc
 fi
 
-# Set default shell to zsh for dlcv and root
-chsh -s /bin/zsh dlcv || true
+# Set default shell to zsh for okay and root
+chsh -s /bin/zsh okay || true
 chsh -s /bin/zsh root || true
 
 # Activate environment in shell configs (must run after oh-my-zsh and user creation)
 ACTIVATE_LINE="source /root/dlcv/bin/activate"
-for RC in /root/.bashrc /root/.zshrc /home/dlcv/.bashrc /home/dlcv/.zshrc; do
+for RC in /root/.bashrc /root/.zshrc /home/okay/.bashrc /home/okay/.zshrc; do
     touch "\$RC" 2>/dev/null || true
     if ! grep -qF "\$ACTIVATE_LINE" "\$RC" 2>/dev/null; then
         echo "\$ACTIVATE_LINE" >> "\$RC"
@@ -577,12 +584,12 @@ echo -e "\033[47;36m ---------- Update dconf for GNOME settings -------- \033[0m
 dconf update
 
 echo -e "\033[47;36m ---------- Setup VNC password and enable x11vnc service -------- \033[0m"
-# Pre-generate VNC password for dlcv user
-mkdir -p /home/dlcv/.vnc
-x11vnc -storepasswd "dlcvai" /home/dlcv/.vnc/passwd
-chown -R dlcv:dlcv /home/dlcv/.vnc
-chmod 600 /home/dlcv/.vnc/passwd
-chmod 755 /home/dlcv/.vnc
+# Pre-generate VNC password for okay user
+mkdir -p /home/okay/.vnc
+x11vnc -storepasswd "168428" /home/okay/.vnc/passwd
+chown -R okay:okay /home/okay/.vnc
+chmod 600 /home/okay/.vnc/passwd
+chmod 755 /home/okay/.vnc
 
 # Enable x11vnc-dlcv service for autostart
 # Services are placed in /etc/systemd/user/ so --global enable works correctly
@@ -599,11 +606,11 @@ if [ -f /authorized_keys ]; then
     chmod 700 /root/.ssh
     chmod 600 /root/.ssh/authorized_keys
 
-    mkdir -p /home/dlcv/.ssh
-    cp /authorized_keys /home/dlcv/.ssh/authorized_keys
-    chmod 700 /home/dlcv/.ssh
-    chmod 600 /home/dlcv/.ssh/authorized_keys
-    chown -hR dlcv:dlcv /home/dlcv/.ssh
+    mkdir -p /home/okay/.ssh
+    cp /authorized_keys /home/okay/.ssh/authorized_keys
+    chmod 700 /home/okay/.ssh
+    chmod 600 /home/okay/.ssh/authorized_keys
+    chown -hR okay:okay /home/okay/.ssh
     rm -f /authorized_keys
 fi
 
@@ -651,9 +658,9 @@ echo -e "\033[47;36m ---------- Configure kimi-web service ---------- \033[0m"
 systemctl daemon-reload
 # 默认不启用 kimi-web，用户按需手动执行 systemctl enable --now kimi-web
 
-# Add alias to zshrc for root and dlcv
+# Add alias to zshrc for root and okay
 ALIAS_LINE='alias kimi_url="journalctl -u kimi-web | grep ➜ | tail -2"'
-for ZRC in /root/.zshrc /home/dlcv/.zshrc; do
+for ZRC in /root/.zshrc /home/okay/.zshrc; do
     if [ -f "$ZRC" ] && ! grep -qF "alias kimi_url=" "$ZRC" 2>/dev/null; then
         echo "$ALIAS_LINE" >> "$ZRC"
     fi
