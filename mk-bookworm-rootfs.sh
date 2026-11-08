@@ -219,8 +219,9 @@ done
 
 ln -sf /run/resolvconf/resolv.conf /etc/resolv.conf
 
-echo "deb http://mirrors.ustc.edu.cn/debian/ bookworm-backports main contrib" >> /etc/apt/sources.list
-echo "deb-src http://mirrors.ustc.edu.cn/debian/ bookworm-backports main contrib" >> /etc/apt/sources.list
+MIRROR_HOST="${RK_DEBIAN_MIRROR:-mirrors.tuna.tsinghua.edu.cn}"
+echo "deb http://${MIRROR_HOST}/debian/ bookworm-backports main contrib" >> /etc/apt/sources.list
+echo "deb-src http://${MIRROR_HOST}/debian/ bookworm-backports main contrib" >> /etc/apt/sources.list
 
 # Add embedfire packages source
 mkdir -p /etc/apt/keyrings
