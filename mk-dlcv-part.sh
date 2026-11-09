@@ -15,6 +15,7 @@ DLCV_PART_SRC="$HERE/dlcv_part_src"
 # 查找候选环境压缩包
 CANDIDATES=(
     "${DLCV_ENV_TAR:-}"
+    "/home/okay/OKay/OKayCam/Camenv/dlcv_env.tar.gz"
     "$HERE/dlcv_env.tar.gz"
     "/share/4-智能相机/0-环境安装/dlcv_env.tar.gz"
 )
